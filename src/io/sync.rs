@@ -532,22 +532,11 @@ where
 /// Unlike [outboard_post_order], this will work with any outboard
 /// implementation, but it is not guaranteed that writes are sequential.
 pub fn outboard(
-    data: impl Read,
+    mut data: impl Read,
     tree: BaoTree,
     mut outboard: impl OutboardMut,
 ) -> io::Result<blake3::Hash> {
     let mut buffer = vec![0u8; tree.chunk_group_bytes()];
-    let hash = outboard_impl(tree, data, &mut outboard, &mut buffer)?;
-    Ok(hash)
-}
-
-/// Internal helper for [outboard_post_order]. This takes a buffer of the chunk group size.
-fn outboard_impl(
-    tree: BaoTree,
-    mut data: impl Read,
-    mut outboard: impl OutboardMut,
-    buffer: &mut [u8],
-) -> io::Result<blake3::Hash> {
     // do not allocate for small trees
     let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
     debug_assert!(buffer.len() == tree.chunk_group_bytes());
@@ -585,22 +574,11 @@ fn outboard_impl(
 /// This will not add the size to the output. You need to store it somewhere else
 /// or append it yourself.
 pub fn outboard_post_order(
-    data: impl Read,
+    mut data: impl Read,
     tree: BaoTree,
     mut outboard: impl Write,
 ) -> io::Result<blake3::Hash> {
     let mut buffer = vec![0u8; tree.chunk_group_bytes()];
-    let hash = outboard_post_order_impl(tree, data, &mut outboard, &mut buffer)?;
-    Ok(hash)
-}
-
-/// Internal helper for [outboard_post_order]. This takes a buffer of the chunk group size.
-fn outboard_post_order_impl(
-    tree: BaoTree,
-    mut data: impl Read,
-    mut outboard: impl Write,
-    buffer: &mut [u8],
-) -> io::Result<blake3::Hash> {
     // do not allocate for small trees
     let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
     debug_assert!(buffer.len() == tree.chunk_group_bytes());
