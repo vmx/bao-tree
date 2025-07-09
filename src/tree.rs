@@ -193,7 +193,7 @@ impl ChunkNum {
         ChunkNum((whole + part) << block_size.0)
     }
 
-    /// number of chunks that this number of bytes covers
+    /// Number of chunks that this number of bytes covers
     ///
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is 2 chunks
     pub const fn chunks(size: u64) -> ChunkNum {
@@ -203,7 +203,7 @@ impl ChunkNum {
         ChunkNum(whole + part)
     }
 
-    /// number of chunks that this number of bytes covers
+    /// Number of chunks that are fully filled that this number of bytes covers
     ///
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is still 1 chunk
     pub const fn full_chunks(size: u64) -> ChunkNum {
