@@ -214,6 +214,7 @@ mod tree;
 use iter::*;
 pub use tree::{BlockSize, ChunkNum};
 pub mod io;
+use arrayvec::ArrayString;
 pub use blake3;
 
 #[cfg(all(test, feature = "tokio_fsm"))]
@@ -232,9 +233,56 @@ pub type ByteRanges = range_collections::RangeSet2<u64>;
 /// [ChunkRanges] implements [`AsRef<ChunkRangesRef>`].
 pub type ChunkRangesRef = range_collections::RangeSetRef<ChunkNum>;
 
-fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> blake3::Hash {
+/// A single hash value
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Hash([u8; 32]);
+
+impl Hash {
+    /// Reference to the underlying array
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    // Copied from the `blake3` crate
+    /// Encode a `Hash` in lowercase hexadecimal.
+    ///
+    /// The returned [`ArrayString`] is a fixed size and doesn't allocate memory
+    /// on the heap. Note that [`ArrayString`] doesn't provide constant-time
+    /// equality checking, so if you need to compare hashes, prefer the `Hash`
+    /// type.
+    ///
+    /// [`ArrayString`]: https://docs.rs/arrayvec/0.5.1/arrayvec/struct.ArrayString.html
+    pub fn to_hex(&self) -> ArrayString<64> {
+        let mut s = ArrayString::new();
+        let table = b"0123456789abcdef";
+        for &b in self.0.iter() {
+            s.push(table[(b >> 4) as usize] as char);
+            s.push(table[(b & 0xf) as usize] as char);
+        }
+        s
+    }
+}
+
+impl From<[u8; 32]> for Hash {
+    fn from(array: [u8; 32]) -> Self {
+        Self(array)
+    }
+}
+
+impl From<Hash> for [u8; 32] {
+    fn from(hash: Hash) -> Self {
+        hash.0.clone()
+    }
+}
+
+// TODO vmx 2025-07-09: Maybe change that to use the length instead of the chunk offset. Though
+// this might be a change that isn't really needed and it doesn't make sense to change APIs for
+// the sake of it.
+// TODO vmx 2025-07-09: This would be generic over the hash and return some `impl Trait`. Or a
+// generic type that is "const generic" over the size.
+fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
     use blake3::hazmat::{ChainingValue, HasherExt};
-    if is_root {
+    let hash = if is_root {
         debug_assert!(start_chunk == 0);
         blake3::hash(data)
     } else {
@@ -243,14 +291,17 @@ fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> blake3::Hash {
         hasher.update(data);
         let non_root_hash: ChainingValue = hasher.finalize_non_root();
         blake3::Hash::from(non_root_hash)
-    }
+    };
+    Hash::from(*hash.as_bytes())
 }
 
-fn parent_cv(left_child: &blake3::Hash, right_child: &blake3::Hash, is_root: bool) -> blake3::Hash {
+// TODO vmx 2025-07-09: This takes a blake3::Hash, but it actually needs the bytes only, so maybe
+// changing this to taking bytes only makes sense.
+fn parent_cv(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash {
     use blake3::hazmat::{merge_subtrees_non_root, merge_subtrees_root, ChainingValue, Mode};
     let left_child: ChainingValue = *left_child.as_bytes();
     let right_child: ChainingValue = *right_child.as_bytes();
-    if is_root {
+    let hash = if is_root {
         merge_subtrees_root(&left_child, &right_child, Mode::Hash)
     } else {
         blake3::Hash::from(merge_subtrees_non_root(
@@ -258,7 +309,8 @@ fn parent_cv(left_child: &blake3::Hash, right_child: &blake3::Hash, is_root: boo
             &right_child,
             Mode::Hash,
         ))
-    }
+    };
+    Hash::from(*hash.as_bytes())
 }
 
 /// Defines a Bao tree.

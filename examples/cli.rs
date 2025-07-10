@@ -23,9 +23,8 @@ use std::{
 
 use anyhow::Context;
 use bao_tree::{
-    blake3,
     io::{outboard::PreOrderMemOutboard, round_up_to_chunks, Leaf, Parent},
-    BlockSize, ChunkNum, ChunkRanges,
+    BlockSize, ChunkNum, ChunkRanges, Hash,
 };
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
@@ -102,7 +101,7 @@ struct DecodeArgs {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "MessageWireFormat", into = "MessageWireFormat")]
 struct Message {
-    hash: blake3::Hash,
+    hash: Hash,
     ranges: ChunkRanges,
     encoded: Vec<u8>,
 }
@@ -129,7 +128,7 @@ impl TryFrom<MessageWireFormat> for Message {
     type Error = anyhow::Error;
 
     fn try_from(msg: MessageWireFormat) -> Result<Self, Self::Error> {
-        let hash = blake3::Hash::from(msg.hash);
+        let hash = Hash::from(msg.hash);
         let ranges = msg
             .ranges
             .iter()
@@ -216,7 +215,7 @@ mod sync {
         reader.read_exact(&mut size)?;
         let size = u64::from_le_bytes(size);
         let tree = BaoTree::new(size, block_size);
-        let iter = DecodeResponseIter::new(msg.hash, tree, reader, &msg.ranges);
+        let iter = DecodeResponseIter::new(msg.hash.clone(), tree, reader, &msg.ranges);
         let mut indent = 0;
         target.set_len(size)?;
         for response in iter {
@@ -256,7 +255,12 @@ mod sync {
         reader.read_exact(&mut size)?;
         let size = u64::from_le_bytes(size);
         let tree = BaoTree::new(size, block_size);
-        let iter = DecodeResponseIter::new(msg.hash, tree, Cursor::new(&msg.encoded), &msg.ranges);
+        let iter = DecodeResponseIter::new(
+            msg.hash.clone(),
+            tree,
+            Cursor::new(&msg.encoded),
+            &msg.ranges,
+        );
         let mut indent = 0;
         for response in iter {
             match response? {

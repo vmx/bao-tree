@@ -2,7 +2,7 @@
 //!
 //! Encocding is used to compute hashes, decoding is only used in tests as a
 //! reference implementation.
-use crate::{blake3, hash_subtree, parent_cv, split_inner, ChunkNum, ChunkRangesRef};
+use crate::{blake3, hash_subtree, parent_cv, split_inner, ChunkNum, ChunkRangesRef, Hash};
 
 /// Given a set of chunk ranges, adapt them for a tree of the given size.
 ///
@@ -104,7 +104,7 @@ pub(crate) fn encode_selected_rec(
     min_level: u32,
     emit_data: bool,
     res: &mut Vec<u8>,
-) -> blake3::Hash {
+) -> Hash {
     use blake3::CHUNK_LEN;
     if data.len() <= CHUNK_LEN {
         if emit_data && !query.is_empty() {
@@ -171,7 +171,9 @@ mod test_support {
     };
 
     use super::{encode_selected_rec, truncate_ranges};
-    use crate::{blake3, BaoChunk, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef};
+    use crate::{
+        blake3, BaoChunk, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash,
+    };
 
     /// Select nodes relevant to a query
     ///
@@ -264,7 +266,7 @@ mod test_support {
         }
     }
 
-    pub(crate) fn bao_outboard_reference(data: &[u8]) -> (Vec<u8>, blake3::Hash) {
+    pub(crate) fn bao_outboard_reference(data: &[u8]) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         res.extend_from_slice(&(data.len() as u64).to_le_bytes());
         let hash = encode_selected_rec(
@@ -279,7 +281,7 @@ mod test_support {
         (res, hash)
     }
 
-    pub(crate) fn bao_encode_reference(data: &[u8]) -> (Vec<u8>, blake3::Hash) {
+    pub(crate) fn bao_encode_reference(data: &[u8]) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         res.extend_from_slice(&(data.len() as u64).to_le_bytes());
         let hash = encode_selected_rec(
@@ -417,7 +419,7 @@ mod test_support {
         data: &[u8],
         ranges: &ChunkRangesRef,
         block_size: BlockSize,
-    ) -> (Vec<u8>, blake3::Hash) {
+    ) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         let size = data.len() as u64;
         // canonicalize the ranges

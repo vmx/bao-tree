@@ -16,7 +16,7 @@ use super::{
     iter::{BaoChunk, NodeInfo},
     pre_order_offset_loop,
     tree::ChunkNum,
-    BaoTree, BlockSize, TreeNode,
+    BaoTree, BlockSize, Hash, TreeNode,
 };
 use crate::{
     assert_tuple_eq, blake3,
@@ -33,12 +33,14 @@ use crate::{
 /// Compute the blake3 hash for the given data,
 ///
 /// using blake3_hash_inner which is used in hash_block.
-fn blake3_hash(data: impl AsRef<[u8]>) -> blake3::Hash {
-    blake3::hash(data.as_ref())
+fn blake3_hash(data: impl AsRef<[u8]>) -> Hash {
+    Hash::from(*blake3::hash(data.as_ref()).as_bytes())
 }
 
-fn bao_tree_blake3_impl(data: Vec<u8>) -> (blake3::Hash, blake3::Hash) {
-    let expected = blake3::hash(&data);
+// TODO vmx 2024-07-10: Remove it, it doesn't make sense enyamore. expected and actual is callign
+// the same code.
+fn bao_tree_blake3_impl(data: Vec<u8>) -> (Hash, Hash) {
+    let expected = Hash::from(*blake3::hash(&data).as_bytes());
     let actual = blake3_hash(&data);
     (expected, actual)
 }
@@ -50,7 +52,7 @@ fn post_order_outboard_bao(data: &[u8]) -> PostOrderMemOutboard {
     let mut encoder = bao::encode::Encoder::new_outboard(cursor);
     encoder.write_all(data).unwrap();
     let hash = encoder.finalize().unwrap();
-    let hash = blake3::Hash::from(*hash.as_bytes());
+    let hash = Hash::from(*hash.as_bytes());
     let tree = BaoTree::new(data.len() as u64, BlockSize::ZERO);
     outboard.splice(..8, []);
     let pre = PreOrderMemOutboard {
@@ -61,7 +63,7 @@ fn post_order_outboard_bao(data: &[u8]) -> PostOrderMemOutboard {
     pre.flip()
 }
 
-fn encode_slice_bao(data: &[u8], chunk_range: Range<ChunkNum>) -> (Vec<u8>, blake3::Hash) {
+fn encode_slice_bao(data: &[u8], chunk_range: Range<ChunkNum>) -> (Vec<u8>, Hash) {
     let (outboard, hash) = bao::encode::outboard(data);
     let slice_start = chunk_range.start.to_bytes();
     let slice_len = (chunk_range.end - chunk_range.start).to_bytes();
@@ -74,7 +76,7 @@ fn encode_slice_bao(data: &[u8], chunk_range: Range<ChunkNum>) -> (Vec<u8>, blak
     let mut res = Vec::new();
     encoder.read_to_end(&mut res).unwrap();
     res.splice(..8, []);
-    let hash = blake3::Hash::from(*hash.as_bytes());
+    let hash = Hash::from(*hash.as_bytes());
     (res, hash)
 }
 
@@ -203,13 +205,13 @@ fn bao_tree_outboard_comparison_cases() {
 fn bao_tree_outboard_levels() {
     use make_test_data as td;
     let td = td(1024 * 32);
-    let expected = blake3::hash(&td);
+    let expected = blake3_hash(&td);
     for chunk_group_log in 0..4 {
         let block_size = BlockSize(chunk_group_log);
         let ob = PostOrderMemOutboard::create(&td, block_size);
         let hash = ob.root();
         let outboard = ob.into_inner_with_suffix();
-        assert_eq!(expected, hash);
+        assert_eq!(expected.as_bytes(), hash.as_bytes());
         assert_eq!(
             outboard.len() as u64,
             BaoTree::new(td.len() as u64, block_size).outboard_size() + 8
@@ -220,7 +222,7 @@ fn bao_tree_outboard_levels() {
 /// encodes the data as outboard with the given chunk_group_log, then uses that outboard to
 /// encode a slice of the data, and compares the result to the original data
 fn bao_tree_slice_roundtrip_test(data: Vec<u8>, mut range: Range<ChunkNum>, block_size: BlockSize) {
-    let root = blake3::hash(&data);
+    let root = Hash::from(*blake3_hash(&data).as_bytes());
     // extend empty range to contain at least 1 byte
     if range.start == range.end {
         range.end.0 += 1;
@@ -344,7 +346,7 @@ fn outboard_from_level() {
 #[test]
 fn outboard_wrong_hash() {
     let data = make_test_data(100000000);
-    let expected = blake3::hash(&data);
+    let expected = blake3_hash(&data);
     let actual = PostOrderMemOutboard::create(&data, BlockSize(4)).root();
     assert_eq!(expected, actual);
 }
@@ -490,7 +492,7 @@ fn test_pre_order_outboard_fast() {
 
 /// Decode encoded ranges given the root hash
 pub fn decode_ranges_into_chunks<'a>(
-    root: blake3::Hash,
+    root: Hash,
     tree: BaoTree,
     encoded: impl Read + 'a,
     ranges: &'a ChunkRangesRef,
@@ -669,7 +671,7 @@ fn encode_selected_reference(
     data: &[u8],
     block_size: BlockSize,
     ranges: &ChunkRangesRef,
-) -> (blake3::Hash, Vec<u8>) {
+) -> (Hash, Vec<u8>) {
     let mut res = Vec::new();
     let max_skip_level = block_size.to_u32();
     let ranges = truncate_ranges(ranges, data.len() as u64);
@@ -765,7 +767,7 @@ fn outboard_hash() {
         let data = &[0u8];
         let outboard = PostOrderMemOutboard::create(data, BlockSize(i));
         let hash = outboard.root();
-        assert_eq!(hash, blake3::hash(data));
+        assert_eq!(hash, blake3_hash(data));
     }
 }
 
@@ -945,7 +947,7 @@ proptest! {
     #[test]
     fn encode_selected_reference_sync_proptest((size, ranges) in size_and_selection(1..100000, 2), block_size in 0..5u8) {
         let data = make_test_data(size);
-        let expected_hash = blake3::hash(&data);
+        let expected_hash = blake3_hash(&data);
         let block_size = BlockSize(block_size);
         let (actual_hash, actual_encoded) = encode_selected_reference(&data, block_size, &ranges);
         let mut expected_encoded = Vec::new();
@@ -966,7 +968,7 @@ proptest! {
     #[test]
     fn encode_selected_reference_fsm_proptest((size, ranges) in size_and_selection(1..100000, 2), block_size in 0..4u8) {
         let data = make_test_data(size);
-        let expected_hash = blake3::hash(&data);
+        let expected_hash = blake3_hash(&data);
         let block_size = BlockSize(block_size);
         let (actual_hash, actual_encoded) = encode_selected_reference(&data, block_size, &ranges);
         let mut expected_encoded = Vec::new();

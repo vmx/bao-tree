@@ -22,7 +22,7 @@ use smallvec::SmallVec;
 pub use super::BaoContentItem;
 use super::{combine_hash_pair, DecodeError};
 use crate::{
-    blake3, hash_subtree,
+    hash_subtree,
     io::{
         error::EncodeError,
         outboard::{PostOrderOutboard, PreOrderOutboard},
@@ -31,7 +31,7 @@ use crate::{
     iter::{BaoChunk, ResponseIter},
     parent_cv,
     rec::{encode_selected_rec, truncate_ranges, truncate_ranges_owned},
-    BaoTree, BlockSize, ChunkRanges, ChunkRangesRef, TreeNode,
+    BaoTree, BlockSize, ChunkRanges, ChunkRangesRef, Hash, TreeNode,
 };
 
 /// A binary merkle tree for blake3 hashes of a blob.
@@ -60,17 +60,14 @@ use crate::{
 /// possibly render the outboard unusable.
 pub trait Outboard {
     /// The root hash
-    fn root(&self) -> blake3::Hash;
+    fn root(&self) -> Hash;
     /// The tree. This contains the information about the size of the file and the block size.
     fn tree(&self) -> BaoTree;
     /// load the hash pair for a node
     ///
     /// This takes a &mut self not because it mutates the outboard (it doesn't),
     /// but to ensure that there is only one outstanding load at a time.
-    fn load(
-        &mut self,
-        node: TreeNode,
-    ) -> impl Future<Output = io::Result<Option<(blake3::Hash, blake3::Hash)>>>;
+    fn load(&mut self, node: TreeNode) -> impl Future<Output = io::Result<Option<(Hash, Hash)>>>;
 }
 
 /// A mutable outboard.
@@ -86,7 +83,7 @@ pub trait OutboardMut: Sized {
     fn save(
         &mut self,
         node: TreeNode,
-        hash_pair: &(blake3::Hash, blake3::Hash),
+        hash_pair: &(Hash, Hash),
     ) -> impl Future<Output = io::Result<()>>;
 
     /// sync to disk
@@ -132,7 +129,7 @@ pub trait CreateOutboard {
 }
 
 impl<O: Outboard> Outboard for &mut O {
-    fn root(&self) -> blake3::Hash {
+    fn root(&self) -> Hash {
         (**self).root()
     }
 
@@ -140,28 +137,28 @@ impl<O: Outboard> Outboard for &mut O {
         (**self).tree()
     }
 
-    async fn load(&mut self, node: TreeNode) -> io::Result<Option<(blake3::Hash, blake3::Hash)>> {
+    async fn load(&mut self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
         (**self).load(node).await
     }
 }
 
 impl<R: AsyncSliceReader> Outboard for PreOrderOutboard<R> {
-    fn root(&self) -> blake3::Hash {
-        self.root
+    fn root(&self) -> Hash {
+        self.root.clone()
     }
 
     fn tree(&self) -> BaoTree {
         self.tree
     }
 
-    async fn load(&mut self, node: TreeNode) -> io::Result<Option<(blake3::Hash, blake3::Hash)>> {
+    async fn load(&mut self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
         let Some(offset) = self.tree.pre_order_offset(node) else {
             return Ok(None);
         };
         let offset = offset * 64;
         let content = self.data.read_at(offset, 64).await?;
         Ok(Some(if content.len() != 64 {
-            (blake3::Hash::from([0; 32]), blake3::Hash::from([0; 32]))
+            (Hash::from([0; 32]), Hash::from([0; 32]))
         } else {
             parse_hash_pair(content)?
         }))
@@ -169,11 +166,7 @@ impl<R: AsyncSliceReader> Outboard for PreOrderOutboard<R> {
 }
 
 impl<O: OutboardMut> OutboardMut for &mut O {
-    async fn save(
-        &mut self,
-        node: TreeNode,
-        hash_pair: &(blake3::Hash, blake3::Hash),
-    ) -> io::Result<()> {
+    async fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         (**self).save(node, hash_pair).await
     }
 
@@ -183,11 +176,7 @@ impl<O: OutboardMut> OutboardMut for &mut O {
 }
 
 impl<W: AsyncSliceWriter> OutboardMut for PreOrderOutboard<W> {
-    async fn save(
-        &mut self,
-        node: TreeNode,
-        hash_pair: &(blake3::Hash, blake3::Hash),
-    ) -> io::Result<()> {
+    async fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         let Some(offset) = self.tree.pre_order_offset(node) else {
             return Ok(());
         };
@@ -205,11 +194,7 @@ impl<W: AsyncSliceWriter> OutboardMut for PreOrderOutboard<W> {
 }
 
 impl<W: AsyncSliceWriter> OutboardMut for PostOrderOutboard<W> {
-    async fn save(
-        &mut self,
-        node: TreeNode,
-        hash_pair: &(blake3::Hash, blake3::Hash),
-    ) -> io::Result<()> {
+    async fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         let Some(offset) = self.tree.post_order_offset(node) else {
             return Ok(());
         };
@@ -279,49 +264,49 @@ impl<W: AsyncSliceWriter> CreateOutboard for PostOrderOutboard<W> {
 }
 
 impl<R: AsyncSliceReader> Outboard for PostOrderOutboard<R> {
-    fn root(&self) -> blake3::Hash {
-        self.root
+    fn root(&self) -> Hash {
+        self.root.clone()
     }
 
     fn tree(&self) -> BaoTree {
         self.tree
     }
 
-    async fn load(&mut self, node: TreeNode) -> io::Result<Option<(blake3::Hash, blake3::Hash)>> {
+    async fn load(&mut self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
         let Some(offset) = self.tree.post_order_offset(node) else {
             return Ok(None);
         };
         let offset = offset.value() * 64;
         let content = self.data.read_at(offset, 64).await?;
         Ok(Some(if content.len() != 64 {
-            (blake3::Hash::from([0; 32]), blake3::Hash::from([0; 32]))
+            (Hash::from([0; 32]), Hash::from([0; 32]))
         } else {
             parse_hash_pair(content)?
         }))
     }
 }
 
-pub(crate) fn parse_hash_pair(buf: Bytes) -> io::Result<(blake3::Hash, blake3::Hash)> {
+pub(crate) fn parse_hash_pair(buf: Bytes) -> io::Result<(Hash, Hash)> {
     if buf.len() != 64 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
             "hash pair must be 64 bytes",
         ));
     }
-    let l_hash = blake3::Hash::from(<[u8; 32]>::try_from(&buf[..32]).unwrap());
-    let r_hash = blake3::Hash::from(<[u8; 32]>::try_from(&buf[32..]).unwrap());
+    let l_hash = Hash::from(<[u8; 32]>::try_from(&buf[..32]).unwrap());
+    let r_hash = Hash::from(<[u8; 32]>::try_from(&buf[32..]).unwrap());
     Ok((l_hash, r_hash))
 }
 
 #[derive(Debug)]
 struct ResponseDecoderInner<R> {
     iter: ResponseIter,
-    stack: SmallVec<[blake3::Hash; 10]>,
+    stack: SmallVec<[Hash; 10]>,
     encoded: R,
 }
 
 impl<R> ResponseDecoderInner<R> {
-    fn new(tree: BaoTree, hash: blake3::Hash, ranges: ChunkRanges, encoded: R) -> Self {
+    fn new(tree: BaoTree, hash: Hash, ranges: ChunkRanges, encoded: R) -> Self {
         // now that we know the size, we can canonicalize the ranges
         let ranges = truncate_ranges_owned(ranges, tree.size());
         let mut res = Self {
@@ -356,7 +341,7 @@ impl<R: AsyncStreamReader> ResponseDecoder<R> {
     /// Create a new response decoder state machine, when you have already read the size.
     ///
     /// The size as well as the chunk size is given in the `tree` parameter.
-    pub fn new(hash: blake3::Hash, ranges: ChunkRanges, tree: BaoTree, encoded: R) -> Self {
+    pub fn new(hash: Hash, ranges: ChunkRanges, tree: BaoTree, encoded: R) -> Self {
         Self(Box::new(ResponseDecoderInner::new(
             tree, hash, ranges, encoded,
         )))
@@ -383,7 +368,7 @@ impl<R: AsyncStreamReader> ResponseDecoder<R> {
     }
 
     /// Hash of the blob we are currently getting
-    pub fn hash(&self) -> &blake3::Hash {
+    pub fn hash(&self) -> &Hash {
         &self.0.stack[0]
     }
 
@@ -402,23 +387,27 @@ impl<R: AsyncStreamReader> ResponseDecoder<R> {
                     .read::<64>()
                     .await
                     .map_err(|e| DecodeError::maybe_parent_not_found(e, node))?;
-                let pair @ (l_hash, r_hash) = read_parent(&buf);
+                let ref pair @ (ref l_hash, ref r_hash) = read_parent(&buf);
                 let parent_hash = this.stack.pop().unwrap();
                 let actual = parent_cv(&l_hash, &r_hash, is_root);
                 // Push the children in reverse order so they are popped in the correct order
                 // only push right if the range intersects with the right child
                 if right {
-                    this.stack.push(r_hash);
+                    this.stack.push(r_hash.clone());
                 }
                 // only push left if the range intersects with the left child
                 if left {
-                    this.stack.push(l_hash);
+                    this.stack.push(l_hash.clone());
                 }
                 // Validate after pushing the children so that we could in principle continue
                 if parent_hash != actual {
                     return Err(DecodeError::ParentHashMismatch(node));
                 }
-                Parent { pair, node }.into()
+                Parent {
+                    pair: pair.clone(),
+                    node,
+                }
+                .into()
             }
             BaoChunk::Leaf {
                 size,
@@ -514,7 +503,7 @@ where
     // buffer for writing incomplete subtrees.
     // for queries that don't have incomplete subtrees, this will never be used.
     let mut out_buf = Vec::new();
-    let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
+    let mut stack = SmallVec::<[Hash; 10]>::new();
     stack.push(outboard.root());
     let mut encoded = encoded;
     let tree = outboard.tree();
@@ -535,10 +524,10 @@ where
                     return Err(EncodeError::ParentHashMismatch(node));
                 }
                 if right {
-                    stack.push(r_hash);
+                    stack.push(r_hash.clone());
                 }
                 if left {
-                    stack.push(l_hash);
+                    stack.push(l_hash.clone());
                 }
                 let pair = combine_hash_pair(&l_hash, &r_hash);
                 encoded
@@ -624,9 +613,9 @@ where
     }
     Ok(())
 }
-fn read_parent(buf: &[u8]) -> (blake3::Hash, blake3::Hash) {
-    let l_hash = blake3::Hash::from(<[u8; 32]>::try_from(&buf[..32]).unwrap());
-    let r_hash = blake3::Hash::from(<[u8; 32]>::try_from(&buf[32..64]).unwrap());
+fn read_parent(buf: &[u8]) -> (Hash, Hash) {
+    let l_hash = Hash::from(<[u8; 32]>::try_from(&buf[..32]).unwrap());
+    let r_hash = Hash::from(<[u8; 32]>::try_from(&buf[32..64]).unwrap());
     (l_hash, r_hash)
 }
 
@@ -638,15 +627,17 @@ pub async fn outboard(
     mut data: impl AsyncStreamReader,
     tree: BaoTree,
     mut outboard: impl OutboardMut,
-) -> io::Result<blake3::Hash> {
+) -> io::Result<Hash> {
     // do not allocate for small trees
-    let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
+    let mut stack = SmallVec::<[Hash; 10]>::new();
     for item in tree.post_order_chunks_iter() {
         match item {
             BaoChunk::Parent { is_root, node, .. } => {
                 let right_hash = stack.pop().unwrap();
                 let left_hash = stack.pop().unwrap();
-                outboard.save(node, &(left_hash, right_hash)).await?;
+                outboard
+                    .save(node, &(left_hash.clone(), right_hash.clone()))
+                    .await?;
                 let parent = parent_cv(&left_hash, &right_hash, is_root);
                 stack.push(parent);
             }
@@ -677,16 +668,16 @@ pub async fn outboard_post_order(
     mut data: impl AsyncStreamReader,
     tree: BaoTree,
     mut outboard: impl AsyncStreamWriter,
-) -> io::Result<blake3::Hash> {
+) -> io::Result<Hash> {
     // do not allocate for small trees
-    let mut stack = SmallVec::<[blake3::Hash; 10]>::new();
+    let mut stack = SmallVec::<[Hash; 10]>::new();
     for item in tree.post_order_chunks_iter() {
         match item {
             BaoChunk::Parent { is_root, .. } => {
                 let right_hash = stack.pop().unwrap();
                 let left_hash = stack.pop().unwrap();
-                outboard.write(left_hash.as_bytes()).await?;
-                outboard.write(right_hash.as_bytes()).await?;
+                outboard.write(&left_hash.0).await?;
+                outboard.write(&right_hash.0).await?;
                 let parent = parent_cv(&left_hash, &right_hash, is_root);
                 stack.push(parent);
             }
@@ -731,8 +722,8 @@ mod validate {
 
     use super::Outboard;
     use crate::{
-        blake3, hash_subtree, io::LocalBoxFuture, parent_cv, rec::truncate_ranges, split, BaoTree,
-        ChunkNum, ChunkRangesRef, TreeNode,
+        hash_subtree, io::LocalBoxFuture, parent_cv, rec::truncate_ranges, split, BaoTree,
+        ChunkNum, ChunkRangesRef, Hash, TreeNode,
     };
 
     /// Given a data file and an outboard, compute all valid ranges.
@@ -803,7 +794,7 @@ mod validate {
         async fn yield_if_valid(
             &mut self,
             range: Range<u64>,
-            hash: &blake3::Hash,
+            hash: &Hash,
             is_root: bool,
         ) -> io::Result<()> {
             let len = (range.end - range.start).try_into().unwrap();
@@ -823,7 +814,7 @@ mod validate {
 
         fn validate_rec<'b>(
             &'b mut self,
-            parent_hash: &'b blake3::Hash,
+            parent_hash: &'b Hash,
             shifted: TreeNode,
             is_root: bool,
             ranges: &'b ChunkRangesRef,
@@ -921,7 +912,7 @@ mod validate {
 
         fn validate_rec<'b>(
             &'b mut self,
-            parent_hash: &'b blake3::Hash,
+            parent_hash: &'b Hash,
             shifted: TreeNode,
             is_root: bool,
             ranges: &'b ChunkRangesRef,

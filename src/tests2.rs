@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 use test_strategy::proptest;
 
 use crate::{
-    assert_tuple_eq, blake3, hash_subtree,
+    assert_tuple_eq, hash_subtree,
     io::{
         fsm::ResponseDecoderNext,
         outboard::{PostOrderMemOutboard, PreOrderMemOutboard},
@@ -31,7 +31,7 @@ use crate::{
         range_union, response_iter_reference, select_nodes_rec, truncate_ranges,
         ReferencePreOrderPartialChunkIterRef,
     },
-    BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode,
+    BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash, TreeNode,
 };
 
 fn tree() -> impl Strategy<Value = BaoTree> {
@@ -546,7 +546,8 @@ fn encode_decode_partial_sync_impl(
     let expected_data = data;
     let encoded_read = std::io::Cursor::new(encoded);
     let tree = BaoTree::new(size, outboard.tree.block_size);
-    let iter = crate::io::sync::DecodeResponseIter::new(outboard.root, tree, encoded_read, ranges);
+    let iter =
+        crate::io::sync::DecodeResponseIter::new(outboard.root.clone(), tree, encoded_read, ranges);
     for item in iter {
         let item = match item {
             Ok(item) => item,
@@ -594,7 +595,7 @@ async fn encode_decode_partial_fsm_impl(
     let expected_data = data;
     let encoded_read = std::io::Cursor::new(encoded.as_slice());
     let mut reading = crate::io::fsm::ResponseDecoder::new(
-        outboard.root,
+        outboard.root.clone(),
         ranges,
         BaoTree::new(size, outboard.tree.block_size),
         encoded_read,
@@ -771,7 +772,7 @@ fn encode_selected_reference(
     data: &[u8],
     block_size: BlockSize,
     ranges: &ChunkRangesRef,
-) -> (blake3::Hash, Vec<u8>) {
+) -> (Hash, Vec<u8>) {
     let mut res = Vec::new();
     res.extend_from_slice(&(data.len() as u64).to_le_bytes());
     let max_skip_level = block_size.to_u32();
