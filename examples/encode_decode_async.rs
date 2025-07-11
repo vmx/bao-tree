@@ -6,7 +6,7 @@ use bao_tree::{
         outboard::PreOrderOutboard,
         round_up_to_chunks,
     },
-    BlockSize, ByteRanges, ChunkRanges,
+    Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
 };
 use bytes::BytesMut;
 use futures_lite::StreamExt;
@@ -38,6 +38,7 @@ async fn main() -> io::Result<()> {
         tree,
         root,
         data: BytesMut::new(),
+        hasher: std::marker::PhantomData::<Blake3Hasher>,
     };
     decode_ranges(from_server, ranges, &mut decoded, &mut ob).await?;
 

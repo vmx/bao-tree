@@ -2,7 +2,7 @@
 //!
 //! Encocding is used to compute hashes, decoding is only used in tests as a
 //! reference implementation.
-use crate::{blake3, hash_subtree, parent_cv, split_inner, ChunkNum, ChunkRangesRef, Hash};
+use crate::{split_inner, ChunkNum, ChunkRangesRef, Hash, Hasher};
 
 /// Given a set of chunk ranges, adapt them for a tree of the given size.
 ///
@@ -96,7 +96,7 @@ fn truncated_len(ranges: &ChunkRangesRef, size: u64) -> usize {
 /// This is used as a reference implementation in tests, but also to compute hashes
 /// below the chunk group size when creating responses for outboards with a chunk group
 /// size of >0.
-pub(crate) fn encode_selected_rec(
+pub(crate) fn encode_selected_rec<H: Hasher>(
     start_chunk: ChunkNum,
     data: &[u8],
     is_root: bool,
@@ -105,18 +105,17 @@ pub(crate) fn encode_selected_rec(
     emit_data: bool,
     res: &mut Vec<u8>,
 ) -> Hash {
-    use blake3::CHUNK_LEN;
-    if data.len() <= CHUNK_LEN {
+    if data.len() <= H::CHUNK_SIZE {
         if emit_data && !query.is_empty() {
             res.extend_from_slice(data);
         }
-        hash_subtree(start_chunk.0, data, is_root)
+        H::hash_chunk(start_chunk.0, data, is_root)
     } else {
-        let chunks = data.len() / CHUNK_LEN + (data.len() % CHUNK_LEN != 0) as usize;
+        let chunks = data.len() / H::CHUNK_SIZE + (data.len() % H::CHUNK_SIZE != 0) as usize;
         let chunks = chunks.next_power_of_two();
         let level = chunks.trailing_zeros() - 1;
         let mid = chunks / 2;
-        let mid_bytes = mid * CHUNK_LEN;
+        let mid_bytes = mid * H::CHUNK_SIZE;
         let mid_chunk = start_chunk + (mid as u64);
         let (l_ranges, r_ranges) = split_inner(query, start_chunk, mid_chunk);
         // for empty ranges, we don't want to emit anything.
@@ -134,7 +133,7 @@ pub(crate) fn encode_selected_rec(
             None
         };
         // recurse to the left and right to compute the hashes and emit data
-        let left = encode_selected_rec(
+        let left = encode_selected_rec::<H>(
             start_chunk,
             &data[..mid_bytes],
             false,
@@ -143,7 +142,7 @@ pub(crate) fn encode_selected_rec(
             emit_data,
             res,
         );
-        let right = encode_selected_rec(
+        let right = encode_selected_rec::<H>(
             mid_chunk,
             &data[mid_bytes..],
             false,
@@ -157,7 +156,7 @@ pub(crate) fn encode_selected_rec(
             res[o..o + 32].copy_from_slice(left.as_bytes());
             res[o + 32..o + 64].copy_from_slice(right.as_bytes());
         }
-        parent_cv(&left, &right, is_root)
+        H::hash_inner(&left, &right, is_root)
     }
 }
 
@@ -172,7 +171,8 @@ mod test_support {
 
     use super::{encode_selected_rec, truncate_ranges};
     use crate::{
-        blake3, BaoChunk, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash,
+        BaoChunk, BaoTree, Blake3Hasher, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash,
+        Hasher,
     };
 
     /// Select nodes relevant to a query
@@ -199,13 +199,13 @@ mod test_support {
         tree_level: u32,
         min_full_level: u32,
         emit: &mut impl FnMut(BaoChunk<&'a ChunkRangesRef>),
+        chunk_size: usize,
     ) {
         if ranges.is_empty() {
             return;
         }
-        use blake3::CHUNK_LEN;
 
-        if size <= CHUNK_LEN {
+        if size <= chunk_size {
             emit(BaoChunk::Leaf {
                 start_chunk,
                 size,
@@ -213,7 +213,7 @@ mod test_support {
                 ranges,
             });
         } else {
-            let chunks: usize = size / CHUNK_LEN + (size % CHUNK_LEN != 0) as usize;
+            let chunks: usize = size / chunk_size + (size % chunk_size != 0) as usize;
             let chunks = chunks.next_power_of_two();
             // chunks is always a power of two, 2 for level 0
             // so we must subtract 1 to get the level, and this is also safe
@@ -231,7 +231,7 @@ mod test_support {
                 // split in half and recurse
                 assert!(start_chunk.0 % 2 == 0);
                 let mid = chunks / 2;
-                let mid_bytes = mid * CHUNK_LEN;
+                let mid_bytes = mid * chunk_size;
                 let mid_chunk = start_chunk + (mid as u64);
                 let (l_ranges, r_ranges) = split_inner(ranges, start_chunk, mid_chunk);
                 let node =
@@ -252,6 +252,7 @@ mod test_support {
                     tree_level,
                     min_full_level,
                     emit,
+                    chunk_size,
                 );
                 select_nodes_rec(
                     mid_chunk,
@@ -261,6 +262,7 @@ mod test_support {
                     tree_level,
                     min_full_level,
                     emit,
+                    chunk_size,
                 );
             }
         }
@@ -269,7 +271,7 @@ mod test_support {
     pub(crate) fn bao_outboard_reference(data: &[u8]) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         res.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        let hash = encode_selected_rec(
+        let hash = encode_selected_rec::<Blake3Hasher>(
             ChunkNum(0),
             data,
             true,
@@ -284,7 +286,7 @@ mod test_support {
     pub(crate) fn bao_encode_reference(data: &[u8]) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         res.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        let hash = encode_selected_rec(
+        let hash = encode_selected_rec::<Blake3Hasher>(
             ChunkNum(0),
             data,
             true,
@@ -303,6 +305,7 @@ mod test_support {
         tree: BaoTree,
         ranges: &ChunkRangesRef,
         min_full_level: u8,
+        chunk_size: usize,
     ) -> Vec<BaoChunk<&ChunkRangesRef>> {
         let mut res = Vec::new();
         select_nodes_rec(
@@ -313,6 +316,7 @@ mod test_support {
             tree.block_size.to_u32(),
             min_full_level as u32,
             &mut |x| res.push(x),
+            chunk_size,
         );
         res
     }
@@ -320,7 +324,11 @@ mod test_support {
     /// Reference implementation of the response iterator, using just the simple recursive
     /// implementation [select_nodes_rec].
     #[cfg(feature = "tokio_fsm")]
-    pub(crate) fn response_iter_reference(tree: BaoTree, ranges: &ChunkRangesRef) -> Vec<BaoChunk> {
+    pub(crate) fn response_iter_reference(
+        tree: BaoTree,
+        ranges: &ChunkRangesRef,
+        chunk_size: usize,
+    ) -> Vec<BaoChunk> {
         let mut res = Vec::new();
         select_nodes_rec(
             ChunkNum(0),
@@ -330,6 +338,7 @@ mod test_support {
             0,
             tree.block_size.to_u32(),
             &mut |x| res.push(x.without_ranges()),
+            chunk_size,
         );
         res
     }
@@ -348,8 +357,14 @@ mod test_support {
     impl<'a> ReferencePreOrderPartialChunkIterRef<'a> {
         /// Create a new iterator over the tree.
         #[cfg(feature = "tokio_fsm")]
-        pub fn new(tree: BaoTree, ranges: &'a ChunkRangesRef, min_full_level: u8) -> Self {
-            let iter = partial_chunk_iter_reference(tree, ranges, min_full_level).into_iter();
+        pub fn new(
+            tree: BaoTree,
+            ranges: &'a ChunkRangesRef,
+            min_full_level: u8,
+            chunk_size: usize,
+        ) -> Self {
+            let iter =
+                partial_chunk_iter_reference(tree, ranges, min_full_level, chunk_size).into_iter();
             Self { iter, tree }
         }
 
@@ -415,7 +430,7 @@ mod test_support {
         })
     }
 
-    pub fn encode_ranges_reference(
+    pub fn encode_ranges_reference<H: Hasher>(
         data: &[u8],
         ranges: &ChunkRangesRef,
         block_size: BlockSize,
@@ -424,7 +439,7 @@ mod test_support {
         let size = data.len() as u64;
         // canonicalize the ranges
         let ranges = truncate_ranges(ranges, size);
-        let hash = encode_selected_rec(
+        let hash = encode_selected_rec::<H>(
             ChunkNum(0),
             data,
             true,
@@ -471,7 +486,7 @@ mod tests {
         rec::{
             bao_encode_reference, bao_outboard_reference, encode_ranges_reference, make_test_data,
         },
-        BlockSize, ChunkNum, ChunkRanges,
+        Blake3Hasher, BlockSize, ChunkNum, ChunkRanges,
     };
 
     fn size_and_slice() -> impl Strategy<Value = (usize, Range<usize>)> {
@@ -533,7 +548,8 @@ mod tests {
         let chunk_start = ChunkNum::full_chunks(start as u64);
         let chunk_end = ChunkNum::chunks(end as u64).max(chunk_start + 1);
         let ranges = ChunkRanges::from(chunk_start..chunk_end);
-        let mut actual_encoded = encode_ranges_reference(&data, &ranges, BlockSize::ZERO).0;
+        let mut actual_encoded =
+            encode_ranges_reference::<Blake3Hasher>(&data, &ranges, BlockSize::ZERO).0;
         actual_encoded.splice(..0, size.to_le_bytes().into_iter());
         prop_assert_eq!(expected_encoded, actual_encoded);
     }
@@ -549,7 +565,8 @@ mod tests {
         let chunk_start = ChunkNum::full_chunks(start as u64);
         let chunk_end = ChunkNum::chunks(end as u64).max(chunk_start + 1);
         let ranges = ChunkRanges::from(chunk_start..chunk_end);
-        let (mut encoded, hash) = encode_ranges_reference(&data, &ranges, BlockSize::ZERO);
+        let (mut encoded, hash) =
+            encode_ranges_reference::<Blake3Hasher>(&data, &ranges, BlockSize::ZERO);
         encoded.splice(..0, size.to_le_bytes().into_iter());
         let bao_hash = bao::Hash::from(*hash.as_bytes());
         let mut decoder =

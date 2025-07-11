@@ -82,7 +82,7 @@
 //!         round_up_to_chunks,
 //!         sync::{decode_ranges, encode_ranges_validated, valid_ranges, CreateOutboard},
 //!     },
-//!     BlockSize, ByteRanges, ChunkRanges,
+//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
 //! };
 //!
 //! /// Use a block size of 16 KiB, a good default for most cases
@@ -111,6 +111,7 @@
 //!     tree,
 //!     root,
 //!     data: vec![],
+//!     hasher: std::marker::PhantomData::<Blake3Hasher>,
 //! };
 //! decode_ranges(from_server, &ranges, &mut decoded, &mut ob)?;
 //!
@@ -144,7 +145,7 @@
 //!         outboard::PreOrderOutboard,
 //!         round_up_to_chunks,
 //!     },
-//!     BlockSize, ByteRanges, ChunkRanges,
+//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
 //! };
 //! use bytes::BytesMut;
 //! use futures_lite::StreamExt;
@@ -176,6 +177,7 @@
 //!     tree,
 //!     root,
 //!     data: BytesMut::new(),
+//!     hasher: std::marker::PhantomData::<Blake3Hasher>,
 //! };
 //! decode_ranges(from_server, ranges, &mut decoded, &mut ob).await?;
 //!
@@ -275,12 +277,38 @@ impl From<Hash> for [u8; 32] {
     }
 }
 
+/// A trait that defines the hashing functions that should be used for the inner and leaf nodes.
+pub trait Hasher {
+    /// The number of data bytes that should be hashed into the leaf nodes
+    const CHUNK_SIZE: usize;
+
+    /// TODO vmx 2025-07-11.
+    fn hash_chunk(start_chunk: u64, data: &[u8], is_root: bool) -> Hash;
+    /// TODO vmx 2025-07-11.
+    fn hash_inner(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash;
+}
+
+/// The hasher implementation for using BLAKE3.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Blake3Hasher;
+
+impl Hasher for Blake3Hasher {
+    const CHUNK_SIZE: usize = 1024;
+
+    fn hash_chunk(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
+        blake3_hash_subtree(start_chunk, data, is_root)
+    }
+    fn hash_inner(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash {
+        blake3_parent_cv(left_child, right_child, is_root)
+    }
+}
+
 // TODO vmx 2025-07-09: Maybe change that to use the length instead of the chunk offset. Though
 // this might be a change that isn't really needed and it doesn't make sense to change APIs for
 // the sake of it.
 // TODO vmx 2025-07-09: This would be generic over the hash and return some `impl Trait`. Or a
 // generic type that is "const generic" over the size.
-fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
+fn blake3_hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
     use blake3::hazmat::{ChainingValue, HasherExt};
     let hash = if is_root {
         debug_assert!(start_chunk == 0);
@@ -297,7 +325,7 @@ fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
 
 // TODO vmx 2025-07-09: This takes a blake3::Hash, but it actually needs the bytes only, so maybe
 // changing this to taking bytes only makes sense.
-fn parent_cv(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash {
+fn blake3_parent_cv(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash {
     use blake3::hazmat::{merge_subtrees_non_root, merge_subtrees_root, ChainingValue, Mode};
     let left_child: ChainingValue = *left_child.as_bytes();
     let right_child: ChainingValue = *right_child.as_bytes();

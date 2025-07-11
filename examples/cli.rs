@@ -24,7 +24,7 @@ use std::{
 use anyhow::Context;
 use bao_tree::{
     io::{outboard::PreOrderMemOutboard, round_up_to_chunks, Leaf, Parent},
-    BlockSize, ChunkNum, ChunkRanges, Hash,
+    Blake3Hasher, BlockSize, ChunkNum, ChunkRanges, Hash,
 };
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
@@ -187,7 +187,7 @@ mod sync {
             sync::{encode_ranges_validated, DecodeResponseIter, Outboard},
             BaoContentItem, Leaf, Parent,
         },
-        BaoTree, BlockSize, ChunkRanges,
+        BaoTree, Blake3Hasher, BlockSize, ChunkRanges,
     };
     use positioned_io::WriteAt;
 
@@ -215,7 +215,8 @@ mod sync {
         reader.read_exact(&mut size)?;
         let size = u64::from_le_bytes(size);
         let tree = BaoTree::new(size, block_size);
-        let iter = DecodeResponseIter::new(msg.hash.clone(), tree, reader, &msg.ranges);
+        let iter =
+            DecodeResponseIter::<_, Blake3Hasher>::new(msg.hash.clone(), tree, reader, &msg.ranges);
         let mut indent = 0;
         target.set_len(size)?;
         for response in iter {
@@ -255,7 +256,7 @@ mod sync {
         reader.read_exact(&mut size)?;
         let size = u64::from_le_bytes(size);
         let tree = BaoTree::new(size, block_size);
-        let iter = DecodeResponseIter::new(
+        let iter = DecodeResponseIter::<_, Blake3Hasher>::new(
             msg.hash.clone(),
             tree,
             Cursor::new(&msg.encoded),
@@ -307,7 +308,7 @@ mod sync {
                 let data = std::fs::read(file)?;
                 log!(v, "computing outboard");
                 let t0 = std::time::Instant::now();
-                let outboard = PreOrderMemOutboard::create(&data, block_size);
+                let outboard = PreOrderMemOutboard::<_, Blake3Hasher>::create(&data, block_size);
                 log!(v, "done in {:?}.", t0.elapsed());
                 log!(v, "encoding message");
                 let t0 = std::time::Instant::now();
@@ -381,7 +382,7 @@ mod fsm {
     ) -> io::Result<()> {
         let mut encoded = Cursor::new(msg.encoded.as_slice());
         let size = encoded.read_u64_le().await?;
-        let mut reading = ResponseDecoder::new(
+        let mut reading = ResponseDecoder::<_, Blake3Hasher>::new(
             msg.hash,
             msg.ranges,
             BaoTree::new(size, block_size),
@@ -424,7 +425,7 @@ mod fsm {
     async fn decode_to_stdout(msg: Message, block_size: BlockSize, v: bool) -> io::Result<()> {
         let mut encoded = Cursor::new(msg.encoded.as_slice());
         let size = encoded.read_u64_le().await?;
-        let mut reading = ResponseDecoder::new(
+        let mut reading = ResponseDecoder::<_, Blake3Hasher>::new(
             msg.hash,
             msg.ranges,
             BaoTree::new(size, block_size),
@@ -478,7 +479,7 @@ mod fsm {
                 let data = Bytes::from(std::fs::read(file)?);
                 log!(v, "computing outboard");
                 let t0 = std::time::Instant::now();
-                let outboard = PreOrderMemOutboard::create(&data, block_size);
+                let outboard = PreOrderMemOutboard::<_, Blake3Hasher>::create(&data, block_size);
                 log!(v, "done in {:?}.", t0.elapsed());
                 log!(v, "encoding message");
                 let t0 = std::time::Instant::now();

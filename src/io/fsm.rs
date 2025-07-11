@@ -22,16 +22,14 @@ use smallvec::SmallVec;
 pub use super::BaoContentItem;
 use super::{combine_hash_pair, DecodeError};
 use crate::{
-    hash_subtree,
     io::{
         error::EncodeError,
         outboard::{PostOrderOutboard, PreOrderOutboard},
         Leaf, Parent,
     },
     iter::{BaoChunk, ResponseIter},
-    parent_cv,
     rec::{encode_selected_rec, truncate_ranges, truncate_ranges_owned},
-    BaoTree, BlockSize, ChunkRanges, ChunkRangesRef, Hash, TreeNode,
+    BaoTree, BlockSize, ChunkRanges, ChunkRangesRef, Hash, Hasher, TreeNode,
 };
 
 /// A binary merkle tree for blake3 hashes of a blob.
@@ -59,6 +57,9 @@ use crate::{
 /// Dropping the load future without polling it to completion is safe, but will
 /// possibly render the outboard unusable.
 pub trait Outboard {
+    /// The hasher that is used
+    type Hasher: Hasher;
+
     /// The root hash
     fn root(&self) -> Hash;
     /// The tree. This contains the information about the size of the file and the block size.
@@ -79,6 +80,9 @@ pub trait Outboard {
 /// If you want to just ignore outboard data, there is a special placeholder outboard
 /// implementation [super::outboard::EmptyOutboard].
 pub trait OutboardMut: Sized {
+    /// The hasher that is used
+    type Hasher: Hasher;
+
     /// Save a hash pair for a node
     fn save(
         &mut self,
@@ -129,6 +133,8 @@ pub trait CreateOutboard {
 }
 
 impl<O: Outboard> Outboard for &mut O {
+    type Hasher = O::Hasher;
+
     fn root(&self) -> Hash {
         (**self).root()
     }
@@ -142,7 +148,9 @@ impl<O: Outboard> Outboard for &mut O {
     }
 }
 
-impl<R: AsyncSliceReader> Outboard for PreOrderOutboard<R> {
+impl<R: AsyncSliceReader, H: Hasher> Outboard for PreOrderOutboard<R, H> {
+    type Hasher = H;
+
     fn root(&self) -> Hash {
         self.root.clone()
     }
@@ -166,6 +174,8 @@ impl<R: AsyncSliceReader> Outboard for PreOrderOutboard<R> {
 }
 
 impl<O: OutboardMut> OutboardMut for &mut O {
+    type Hasher = O::Hasher;
+
     async fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         (**self).save(node, hash_pair).await
     }
@@ -175,7 +185,9 @@ impl<O: OutboardMut> OutboardMut for &mut O {
     }
 }
 
-impl<W: AsyncSliceWriter> OutboardMut for PreOrderOutboard<W> {
+impl<W: AsyncSliceWriter, H: Hasher> OutboardMut for PreOrderOutboard<W, H> {
+    type Hasher = H;
+
     async fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         let Some(offset) = self.tree.pre_order_offset(node) else {
             return Ok(());
@@ -193,7 +205,9 @@ impl<W: AsyncSliceWriter> OutboardMut for PreOrderOutboard<W> {
     }
 }
 
-impl<W: AsyncSliceWriter> OutboardMut for PostOrderOutboard<W> {
+impl<W: AsyncSliceWriter, H: Hasher> OutboardMut for PostOrderOutboard<W, H> {
+    type Hasher = H;
+
     async fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         let Some(offset) = self.tree.post_order_offset(node) else {
             return Ok(());
@@ -211,7 +225,7 @@ impl<W: AsyncSliceWriter> OutboardMut for PostOrderOutboard<W> {
     }
 }
 
-impl<W: AsyncSliceWriter> CreateOutboard for PreOrderOutboard<W> {
+impl<W: AsyncSliceWriter, H: Hasher> CreateOutboard for PreOrderOutboard<W, H> {
     async fn create_sized(
         data: impl AsyncStreamReader,
         size: u64,
@@ -237,7 +251,7 @@ impl<W: AsyncSliceWriter> CreateOutboard for PreOrderOutboard<W> {
     }
 }
 
-impl<W: AsyncSliceWriter> CreateOutboard for PostOrderOutboard<W> {
+impl<W: AsyncSliceWriter, H: Hasher> CreateOutboard for PostOrderOutboard<W, H> {
     async fn create_sized(
         data: impl AsyncStreamReader,
         size: u64,
@@ -263,7 +277,9 @@ impl<W: AsyncSliceWriter> CreateOutboard for PostOrderOutboard<W> {
     }
 }
 
-impl<R: AsyncSliceReader> Outboard for PostOrderOutboard<R> {
+impl<R: AsyncSliceReader, H: Hasher> Outboard for PostOrderOutboard<R, H> {
+    type Hasher = H;
+
     fn root(&self) -> Hash {
         self.root.clone()
     }
@@ -321,15 +337,18 @@ impl<R> ResponseDecoderInner<R> {
 
 /// Response decoder
 #[derive(Debug)]
-pub struct ResponseDecoder<R>(Box<ResponseDecoderInner<R>>);
+pub struct ResponseDecoder<R, H> {
+    inner: Box<ResponseDecoderInner<R>>,
+    hasher: std::marker::PhantomData<H>,
+}
 
 /// Next type for ResponseDecoder.
 #[derive(Debug)]
-pub enum ResponseDecoderNext<R> {
+pub enum ResponseDecoderNext<R, H> {
     /// One more item, and you get back the state machine in the next state
     More(
         (
-            ResponseDecoder<R>,
+            ResponseDecoder<R, H>,
             std::result::Result<BaoContentItem, DecodeError>,
         ),
     ),
@@ -337,39 +356,40 @@ pub enum ResponseDecoderNext<R> {
     Done(R),
 }
 
-impl<R: AsyncStreamReader> ResponseDecoder<R> {
+impl<R: AsyncStreamReader, H: Hasher> ResponseDecoder<R, H> {
     /// Create a new response decoder state machine, when you have already read the size.
     ///
     /// The size as well as the chunk size is given in the `tree` parameter.
     pub fn new(hash: Hash, ranges: ChunkRanges, tree: BaoTree, encoded: R) -> Self {
-        Self(Box::new(ResponseDecoderInner::new(
-            tree, hash, ranges, encoded,
-        )))
+        Self {
+            inner: Box::new(ResponseDecoderInner::new(tree, hash, ranges, encoded)),
+            hasher: std::marker::PhantomData::<H>,
+        }
     }
 
     /// Proceed to the next state by reading the next chunk from the stream.
-    pub async fn next(mut self) -> ResponseDecoderNext<R> {
-        if let Some(chunk) = self.0.iter.next() {
+    pub async fn next(mut self) -> ResponseDecoderNext<R, H> {
+        if let Some(chunk) = self.inner.iter.next() {
             let item = self.next0(chunk).await;
             ResponseDecoderNext::More((self, item))
         } else {
-            ResponseDecoderNext::Done(self.0.encoded)
+            ResponseDecoderNext::Done(self.inner.encoded)
         }
     }
 
     /// Immediately return the underlying reader
     pub fn finish(self) -> R {
-        self.0.encoded
+        self.inner.encoded
     }
 
     /// The tree geometry
     pub fn tree(&self) -> BaoTree {
-        self.0.iter.tree()
+        self.inner.iter.tree()
     }
 
     /// Hash of the blob we are currently getting
     pub fn hash(&self) -> &Hash {
-        &self.0.stack[0]
+        &self.inner.stack[0]
     }
 
     async fn next0(&mut self, chunk: BaoChunk) -> std::result::Result<BaoContentItem, DecodeError> {
@@ -381,7 +401,7 @@ impl<R: AsyncStreamReader> ResponseDecoder<R> {
                 node,
                 ..
             } => {
-                let this = &mut self.0;
+                let this = &mut self.inner;
                 let buf = this
                     .encoded
                     .read::<64>()
@@ -389,7 +409,7 @@ impl<R: AsyncStreamReader> ResponseDecoder<R> {
                     .map_err(|e| DecodeError::maybe_parent_not_found(e, node))?;
                 let ref pair @ (ref l_hash, ref r_hash) = read_parent(&buf);
                 let parent_hash = this.stack.pop().unwrap();
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = H::hash_inner(&l_hash, &r_hash, is_root);
                 // Push the children in reverse order so they are popped in the correct order
                 // only push right if the range intersects with the right child
                 if right {
@@ -416,14 +436,14 @@ impl<R: AsyncStreamReader> ResponseDecoder<R> {
                 ..
             } => {
                 // this will resize always to chunk group size, except for the last chunk
-                let this = &mut self.0;
+                let this = &mut self.inner;
                 let data = this
                     .encoded
                     .read_bytes_exact(size)
                     .await
                     .map_err(|e| DecodeError::maybe_leaf_not_found(e, start_chunk))?;
                 let leaf_hash = this.stack.pop().unwrap();
-                let actual = hash_subtree(start_chunk.0, &data, is_root);
+                let actual = H::hash_chunk(start_chunk.0, &data, is_root);
                 if leaf_hash != actual {
                     return Err(DecodeError::LeafHashMismatch(start_chunk));
                 }
@@ -518,7 +538,7 @@ where
                 ..
             } => {
                 let (l_hash, r_hash) = outboard.load(node).await?.unwrap();
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
                 let expected = stack.pop().unwrap();
                 if actual != expected {
                     return Err(EncodeError::ParentHashMismatch(node));
@@ -551,7 +571,7 @@ where
                     // write into an out buffer to ensure we detect mismatches
                     // before writing to the output.
                     out_buf.clear();
-                    let actual = encode_selected_rec(
+                    let actual = encode_selected_rec::<O::Hasher>(
                         start_chunk,
                         &bytes,
                         is_root,
@@ -562,7 +582,7 @@ where
                     );
                     (actual, out_buf.clone().into())
                 } else {
-                    let actual = hash_subtree(start_chunk.0, &bytes, is_root);
+                    let actual = O::Hasher::hash_chunk(start_chunk.0, &bytes, is_root);
                     (actual, bytes)
                 };
                 if actual != expected {
@@ -593,7 +613,12 @@ where
     R: AsyncStreamReader,
     W: AsyncSliceWriter,
 {
-    let mut reading = ResponseDecoder::new(outboard.root(), ranges, outboard.tree(), encoded);
+    let mut reading = ResponseDecoder::<R, <O as Outboard>::Hasher>::new(
+        outboard.root(),
+        ranges,
+        outboard.tree(),
+        encoded,
+    );
     loop {
         let item = match reading.next().await {
             ResponseDecoderNext::Done(_reader) => break,
@@ -623,10 +648,10 @@ fn read_parent(buf: &[u8]) -> (Hash, Hash) {
 ///
 /// Unlike [outboard_post_order], this will work with any outboard
 /// implementation, but it is not guaranteed that writes are sequential.
-pub async fn outboard(
-    mut data: impl AsyncStreamReader,
+pub async fn outboard<R: AsyncStreamReader, O: OutboardMut>(
+    mut data: R,
     tree: BaoTree,
-    mut outboard: impl OutboardMut,
+    mut outboard: O,
 ) -> io::Result<Hash> {
     // do not allocate for small trees
     let mut stack = SmallVec::<[Hash; 10]>::new();
@@ -638,7 +663,7 @@ pub async fn outboard(
                 outboard
                     .save(node, &(left_hash.clone(), right_hash.clone()))
                     .await?;
-                let parent = parent_cv(&left_hash, &right_hash, is_root);
+                let parent = O::Hasher::hash_inner(&left_hash, &right_hash, is_root);
                 stack.push(parent);
             }
             BaoChunk::Leaf {
@@ -648,7 +673,7 @@ pub async fn outboard(
                 ..
             } => {
                 let buf = data.read_bytes_exact(size).await?;
-                let hash = hash_subtree(start_chunk.0, &buf, is_root);
+                let hash = O::Hasher::hash_chunk(start_chunk.0, &buf, is_root);
                 stack.push(hash);
             }
         }
@@ -664,7 +689,7 @@ pub async fn outboard(
 ///
 /// This will not add the size to the output. You need to store it somewhere else
 /// or append it yourself.
-pub async fn outboard_post_order(
+pub async fn outboard_post_order<H: Hasher>(
     mut data: impl AsyncStreamReader,
     tree: BaoTree,
     mut outboard: impl AsyncStreamWriter,
@@ -678,7 +703,7 @@ pub async fn outboard_post_order(
                 let left_hash = stack.pop().unwrap();
                 outboard.write(&left_hash.0).await?;
                 outboard.write(&right_hash.0).await?;
-                let parent = parent_cv(&left_hash, &right_hash, is_root);
+                let parent = H::hash_inner(&left_hash, &right_hash, is_root);
                 stack.push(parent);
             }
             BaoChunk::Leaf {
@@ -688,7 +713,7 @@ pub async fn outboard_post_order(
                 ..
             } => {
                 let buf = data.read_bytes_exact(size).await?;
-                let hash = hash_subtree(start_chunk.0, &buf, is_root);
+                let hash = H::hash_chunk(start_chunk.0, &buf, is_root);
                 stack.push(hash);
             }
         }
@@ -722,8 +747,8 @@ mod validate {
 
     use super::Outboard;
     use crate::{
-        hash_subtree, io::LocalBoxFuture, parent_cv, rec::truncate_ranges, split, BaoTree,
-        ChunkNum, ChunkRangesRef, Hash, TreeNode,
+        io::LocalBoxFuture, rec::truncate_ranges, split, BaoTree, ChunkNum, ChunkRangesRef, Hash,
+        Hasher, TreeNode,
     };
 
     /// Given a data file and an outboard, compute all valid ranges.
@@ -770,7 +795,7 @@ mod validate {
                 let data = data
                     .read_exact_at(0, tree.size().try_into().unwrap())
                     .await?;
-                let actual = hash_subtree(0, &data, true);
+                let actual = O::Hasher::hash_chunk(0, &data, true);
                 if actual == outboard.root() {
                     co.yield_(Ok(ChunkNum(0)..tree.chunks())).await;
                 }
@@ -800,7 +825,8 @@ mod validate {
             let len = (range.end - range.start).try_into().unwrap();
             let data = self.data.read_exact_at(range.start, len).await?;
             // is_root is always false because the case of a single chunk group is handled before calling this function
-            let actual = hash_subtree(ChunkNum::full_chunks(range.start).0, &data, is_root);
+            let actual =
+                O::Hasher::hash_chunk(ChunkNum::full_chunks(range.start).0, &data, is_root);
             if &actual == hash {
                 // yield the left range
                 self.co
@@ -834,7 +860,7 @@ mod validate {
                     // outboard is incomplete, we can't validate
                     return Ok(());
                 };
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
                 if &actual != parent_hash {
                     // hash mismatch, we can't validate
                     return Ok(());
@@ -937,7 +963,7 @@ mod validate {
                     // outboard is incomplete, we can't validate
                     return Ok(());
                 };
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
                 if &actual != parent_hash {
                     // hash mismatch, we can't validate
                     return Ok(());

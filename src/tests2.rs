@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 use test_strategy::proptest;
 
 use crate::{
-    assert_tuple_eq, hash_subtree,
+    assert_tuple_eq,
     io::{
         fsm::ResponseDecoderNext,
         outboard::{PostOrderMemOutboard, PreOrderMemOutboard},
@@ -25,13 +25,14 @@ use crate::{
         BaoContentItem, Leaf, Parent,
     },
     iter::{BaoChunk, PreOrderPartialChunkIterRef, ResponseIterRef},
-    parent_cv, prop_assert_tuple_eq,
+    prop_assert_tuple_eq,
     rec::{
         encode_selected_rec, get_leaf_ranges, make_test_data, partial_chunk_iter_reference,
         range_union, response_iter_reference, select_nodes_rec, truncate_ranges,
         ReferencePreOrderPartialChunkIterRef,
     },
-    BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash, TreeNode,
+    BaoTree, Blake3Hasher, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash, Hasher,
+    TreeNode,
 };
 
 fn tree() -> impl Strategy<Value = BaoTree> {
@@ -142,7 +143,7 @@ fn post_traversal_chunks_iter_proptest(#[strategy(tree())] tree: BaoTree) {
 }
 
 /// Brute force test for an outboard that just computes the expected hash for each pair
-fn outboard_test_sync(data: &[u8], outboard: impl crate::io::sync::Outboard) {
+fn outboard_test_sync<O: crate::io::sync::Outboard>(data: &[u8], outboard: O) {
     let tree = outboard.tree();
     let nodes = tree
         .pre_order_nodes_iter()
@@ -155,14 +156,14 @@ fn outboard_test_sync(data: &[u8], outboard: impl crate::io::sync::Outboard) {
         let start_chunk = node.chunk_range().start;
         let byte_range = tree.byte_range(node);
         let data = &data[byte_range.start.try_into().unwrap()..byte_range.end.try_into().unwrap()];
-        let expected = hash_subtree(start_chunk.0, data, is_root);
-        let actual = parent_cv(&l_hash, &r_hash, is_root);
+        let expected = O::Hasher::hash_chunk(start_chunk.0, data, is_root);
+        let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
         assert_eq!(actual, expected);
     }
 }
 
 /// Brute force test for an outboard that just computes the expected hash for each pair
-async fn outboard_test_fsm(data: &[u8], mut outboard: impl crate::io::fsm::Outboard) {
+async fn outboard_test_fsm<O: crate::io::fsm::Outboard>(data: &[u8], mut outboard: O) {
     let tree = outboard.tree();
     let nodes = tree
         .pre_order_nodes_iter()
@@ -175,15 +176,15 @@ async fn outboard_test_fsm(data: &[u8], mut outboard: impl crate::io::fsm::Outbo
         let start_chunk = node.chunk_range().start;
         let byte_range = tree.byte_range(node);
         let data = &data[byte_range.start.try_into().unwrap()..byte_range.end.try_into().unwrap()];
-        let expected = hash_subtree(start_chunk.0, data, is_root);
-        let actual = parent_cv(&l_hash, &r_hash, is_root);
+        let expected = O::Hasher::hash_chunk(start_chunk.0, data, is_root);
+        let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
         assert_eq!(actual, expected);
     }
 }
 
 fn post_oder_outboard_sync_impl(tree: BaoTree) {
     let data = make_test_data(tree.size.try_into().unwrap());
-    let outboard = PostOrderMemOutboard::create(&data, tree.block_size);
+    let outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, tree.block_size);
     assert_eq!(
         outboard.data.len() as u64,
         outboard.tree().outboard_hash_pairs() * 64
@@ -207,7 +208,7 @@ fn post_oder_outboard_sync_proptest(#[strategy(tree())] tree: BaoTree) {
 
 fn post_oder_outboard_fsm_impl(tree: BaoTree) {
     let data = make_test_data(tree.size.try_into().unwrap());
-    let outboard = PostOrderMemOutboard::create(&data, tree.block_size);
+    let outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, tree.block_size);
     assert_eq!(
         outboard.data.len() as u64,
         outboard.tree().outboard_hash_pairs() * 64
@@ -224,7 +225,7 @@ fn post_oder_outboard_fsm_proptest(#[strategy(tree())] tree: BaoTree) {
 
 fn mem_outboard_flip_impl(tree: BaoTree) {
     let data = make_test_data(tree.size.try_into().unwrap());
-    let post = PostOrderMemOutboard::create(&data, tree.block_size);
+    let post = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, tree.block_size);
     let pre = PreOrderMemOutboard::create(data, tree.block_size);
     assert_eq!(post, pre.flip());
     assert_eq!(pre, post.flip());
@@ -324,7 +325,7 @@ mod validate {
         let size = tree.size.try_into().unwrap();
         let block_size = tree.block_size;
         let data = make_test_data(size);
-        let mut outboard = PostOrderMemOutboard::create(&data, block_size);
+        let mut outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, block_size);
         let expected = ChunkRanges::from(..outboard.tree().chunks());
         let actual = valid_ranges_sync(&outboard, &data);
         assert_eq!(expected, actual);
@@ -365,7 +366,7 @@ mod validate {
         let size = tree.size.try_into().unwrap();
         let block_size = tree.block_size;
         let data = make_test_data(size);
-        let mut outboard = PostOrderMemOutboard::create(data, block_size);
+        let mut outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(data, block_size);
         let expected = ChunkRanges::from(..outboard.tree().chunks());
         if !outboard.data.is_empty() {
             // flip a random bit in the outboard
@@ -396,7 +397,7 @@ mod validate {
         let size = tree.size.try_into().unwrap();
         let block_size = tree.block_size;
         let data = make_test_data(size);
-        let mut outboard = PostOrderMemOutboard::create(data, block_size);
+        let mut outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(data, block_size);
         let expected = ChunkRanges::from(..outboard.tree().chunks());
         if !outboard.data.is_empty() {
             // flip a random bit in the outboard
@@ -429,7 +430,7 @@ mod validate {
         let size = tree.size.try_into().unwrap();
         let block_size = tree.block_size;
         let data = make_test_data(size);
-        let mut outboard = PostOrderMemOutboard::create(&data, block_size);
+        let mut outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, block_size);
         let expected = ChunkRanges::from(..outboard.tree().chunks());
         if !outboard.data.is_empty() {
             // flip a random bit in the outboard
@@ -459,7 +460,7 @@ mod validate {
     #[test]
     fn validate_bug() {
         let data = Bytes::from(make_test_data(19308432));
-        let outboard = PostOrderMemOutboard::create(&data, BlockSize(4));
+        let outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, BlockSize(4));
         let expected = ChunkRanges::from(..ChunkNum::chunks(data.len() as u64));
         let actual = valid_ranges_fsm(outboard, data.clone());
         assert_eq!(expected, actual);
@@ -488,6 +489,7 @@ fn encode_decode_full_sync_impl(
         root: outboard.root(),
         tree,
         data: vec![0; tree.outboard_size().try_into().unwrap()],
+        hasher: std::marker::PhantomData::<Blake3Hasher>,
     };
     crate::io::sync::decode_ranges(encoded_read, &ranges, &mut decoded, &mut ob_res).unwrap();
     ((decoded, ob_res), (data.to_vec(), outboard))
@@ -526,6 +528,7 @@ async fn encode_decode_full_fsm_impl(
             root,
             tree,
             data: outboard_data,
+            hasher: std::marker::PhantomData::<Blake3Hasher>,
         }
     };
     let mut decoded = BytesMut::new();
@@ -546,8 +549,12 @@ fn encode_decode_partial_sync_impl(
     let expected_data = data;
     let encoded_read = std::io::Cursor::new(encoded);
     let tree = BaoTree::new(size, outboard.tree.block_size);
-    let iter =
-        crate::io::sync::DecodeResponseIter::new(outboard.root.clone(), tree, encoded_read, ranges);
+    let iter = crate::io::sync::DecodeResponseIter::<_, Blake3Hasher>::new(
+        outboard.root.clone(),
+        tree,
+        encoded_read,
+        ranges,
+    );
     for item in iter {
         let item = match item {
             Ok(item) => item,
@@ -594,12 +601,13 @@ async fn encode_decode_partial_fsm_impl(
     .unwrap();
     let expected_data = data;
     let encoded_read = std::io::Cursor::new(encoded.as_slice());
-    let mut reading = crate::io::fsm::ResponseDecoder::new(
-        outboard.root.clone(),
-        ranges,
-        BaoTree::new(size, outboard.tree.block_size),
-        encoded_read,
-    );
+    let mut reading =
+        crate::io::fsm::ResponseDecoder::<_, <PostOrderMemOutboard as Outboard>::Hasher>::new(
+            outboard.root.clone(),
+            ranges,
+            BaoTree::new(size, outboard.tree.block_size),
+            encoded_read,
+        );
     if size != outboard.tree.size {
         return false;
     }
@@ -718,6 +726,7 @@ fn pre_order_nodes_iter_reference(tree: BaoTree, ranges: &ChunkRangesRef) -> Vec
             };
             res.push(node);
         },
+        <Blake3Hasher as Hasher>::CHUNK_SIZE,
     );
     res
 }
@@ -741,9 +750,19 @@ fn selection_reference_comparison_cases() {
     for ((size, block_level), ranges) in cases {
         // println!("{} {} {:?}", size, block_level, ranges);
         let tree = BaoTree::new(size, BlockSize(block_level));
-        let expected = partial_chunk_iter_reference(tree, &ranges, u8::MAX);
-        let actual =
-            ReferencePreOrderPartialChunkIterRef::new(tree, &ranges, u8::MAX).collect::<Vec<_>>();
+        let expected = partial_chunk_iter_reference(
+            tree,
+            &ranges,
+            u8::MAX,
+            <Blake3Hasher as Hasher>::CHUNK_SIZE,
+        );
+        let actual = ReferencePreOrderPartialChunkIterRef::new(
+            tree,
+            &ranges,
+            u8::MAX,
+            <Blake3Hasher as Hasher>::CHUNK_SIZE,
+        )
+        .collect::<Vec<_>>();
         assert_eq!(expected, actual);
     }
 }
@@ -755,9 +774,16 @@ fn selection_reference_comparison_proptest(
 ) {
     let (size, ranges) = size_and_selection;
     let tree = BaoTree::new(size as u64, block_size);
-    let expected = partial_chunk_iter_reference(tree, &ranges, 0);
+    let expected =
+        partial_chunk_iter_reference(tree, &ranges, 0, <Blake3Hasher as Hasher>::CHUNK_SIZE);
     // let actual1 = ResponseIterRef::new(tree, &ranges).collect::<Vec<_>>();
-    let actual2 = ReferencePreOrderPartialChunkIterRef::new(tree, &ranges, 0).collect::<Vec<_>>();
+    let actual2 = ReferencePreOrderPartialChunkIterRef::new(
+        tree,
+        &ranges,
+        0,
+        <Blake3Hasher as Hasher>::CHUNK_SIZE,
+    )
+    .collect::<Vec<_>>();
     if actual2 != expected {
         println!();
         println!("{:?} {:?}", tree, ranges);
@@ -776,7 +802,7 @@ fn encode_selected_reference(
     let mut res = Vec::new();
     res.extend_from_slice(&(data.len() as u64).to_le_bytes());
     let max_skip_level = block_size.to_u32();
-    let hash = encode_selected_rec(
+    let hash = encode_selected_rec::<Blake3Hasher>(
         ChunkNum(0),
         data,
         true,
@@ -830,8 +856,13 @@ fn filtered_chunks() {
         let (_, encoded) = encode_selected_reference(&data, BlockSize(min_full_level), &ranges);
         println!("{}", hex::encode(&encoded));
         println!("select:");
-        let selected = ReferencePreOrderPartialChunkIterRef::new(tree, &ranges, min_full_level)
-            .collect::<Vec<_>>();
+        let selected = ReferencePreOrderPartialChunkIterRef::new(
+            tree,
+            &ranges,
+            min_full_level,
+            <Blake3Hasher as Hasher>::CHUNK_SIZE,
+        )
+        .collect::<Vec<_>>();
         for item in selected {
             println!("{}", item.to_debug_string(10));
         }
@@ -841,7 +872,12 @@ fn filtered_chunks() {
 #[test]
 fn response_iter_cases() {
     for (tree, ranges, min_full_level) in cases() {
-        let expected = partial_chunk_iter_reference(tree, &ranges, min_full_level);
+        let expected = partial_chunk_iter_reference(
+            tree,
+            &ranges,
+            min_full_level,
+            <Blake3Hasher as Hasher>::CHUNK_SIZE,
+        );
         let actual =
             PreOrderPartialChunkIterRef::new(tree, &ranges, min_full_level).collect::<Vec<_>>();
         // if expected != actual {
@@ -865,7 +901,12 @@ fn response_iter_proptest(
 ) {
     let (size, ranges) = size_and_selection;
     let tree = BaoTree::new(size as u64, BlockSize::ZERO);
-    let expected = partial_chunk_iter_reference(tree, &ranges, block_size.0);
+    let expected = partial_chunk_iter_reference(
+        tree,
+        &ranges,
+        block_size.0,
+        <Blake3Hasher as Hasher>::CHUNK_SIZE,
+    );
     let actual = PreOrderPartialChunkIterRef::new(tree, &ranges, block_size.0).collect::<Vec<_>>();
     if expected != actual {
         println!("expected:");
@@ -886,7 +927,7 @@ fn response_iter_2_cases() {
         .into_iter()
         .map(|((size, block_level), ranges)| (BaoTree::new(size, BlockSize(block_level)), ranges));
     for (tree, ranges) in cases {
-        let expected = response_iter_reference(tree, &ranges);
+        let expected = response_iter_reference(tree, &ranges, <Blake3Hasher as Hasher>::CHUNK_SIZE);
         let actual = ResponseIterRef::new(tree, &ranges).collect::<Vec<_>>();
         if expected != actual {
             println!("expected:");
@@ -909,7 +950,7 @@ fn response_iter_2_proptest(
 ) {
     let (size, ranges) = size_and_selection;
     let tree = BaoTree::new(size as u64, block_size);
-    let expected = response_iter_reference(tree, &ranges);
+    let expected = response_iter_reference(tree, &ranges, <Blake3Hasher as Hasher>::CHUNK_SIZE);
     let actual = ResponseIterRef::new(tree, &ranges).collect::<Vec<_>>();
     if expected != actual {
         println!("expected:");

@@ -6,7 +6,7 @@ use bao_tree::{
         round_up_to_chunks,
         sync::{decode_ranges, encode_ranges_validated, valid_ranges, CreateOutboard},
     },
-    BlockSize, ByteRanges, ChunkRanges,
+    Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
 };
 
 /// Use a block size of 16 KiB, a good default for most cases
@@ -35,6 +35,7 @@ fn main() -> io::Result<()> {
         tree,
         root,
         data: vec![],
+        hasher: std::marker::PhantomData::<Blake3Hasher>,
     };
     decode_ranges(from_server, &ranges, &mut decoded, &mut ob)?;
 

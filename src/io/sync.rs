@@ -14,16 +14,14 @@ use smallvec::SmallVec;
 use super::{combine_hash_pair, BaoContentItem, DecodeError};
 pub use crate::rec::truncate_ranges;
 use crate::{
-    hash_subtree,
     io::{
         error::EncodeError,
         outboard::{parse_hash_pair, PostOrderOutboard, PreOrderOutboard},
         Leaf, Parent,
     },
     iter::{BaoChunk, ResponseIterRef},
-    parent_cv,
     rec::encode_selected_rec,
-    BaoTree, BlockSize, ChunkRangesRef, Hash, TreeNode,
+    BaoTree, BlockSize, ChunkRangesRef, Hash, Hasher, TreeNode,
 };
 
 /// A binary merkle tree for blake3 hashes of a blob.
@@ -44,6 +42,9 @@ use crate::{
 /// If you use a different storage engine, you can implement this trait for it. E.g.
 /// you could store the hashes in a database and use the node number as the key.
 pub trait Outboard {
+    /// The hasher that is used
+    type Hasher: Hasher;
+
     /// The root hash
     fn root(&self) -> Hash;
     /// The tree. This contains the information about the size of the file and the block size.
@@ -61,6 +62,9 @@ pub trait Outboard {
 /// If you want to just ignore outboard data, there is a special placeholder outboard
 /// implementation [super::outboard::EmptyOutboard].
 pub trait OutboardMut: Sized {
+    /// The hasher that is used
+    type Hasher: Hasher;
+
     /// Save a hash pair for a node
     fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()>;
 
@@ -100,6 +104,8 @@ pub trait CreateOutboard {
 }
 
 impl<O: OutboardMut> OutboardMut for &mut O {
+    type Hasher = O::Hasher;
+
     fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         (**self).save(node, hash_pair)
     }
@@ -110,6 +116,8 @@ impl<O: OutboardMut> OutboardMut for &mut O {
 }
 
 impl<O: Outboard> Outboard for &O {
+    type Hasher = O::Hasher;
+
     fn root(&self) -> Hash {
         (**self).root()
     }
@@ -122,6 +130,8 @@ impl<O: Outboard> Outboard for &O {
 }
 
 impl<O: Outboard> Outboard for &mut O {
+    type Hasher = O::Hasher;
+
     fn root(&self) -> Hash {
         (**self).root()
     }
@@ -133,7 +143,9 @@ impl<O: Outboard> Outboard for &mut O {
     }
 }
 
-impl<R: ReadAt> Outboard for PreOrderOutboard<R> {
+impl<R: ReadAt, H: Hasher> Outboard for PreOrderOutboard<R, H> {
+    type Hasher = H;
+
     fn root(&self) -> Hash {
         self.root.clone()
     }
@@ -153,7 +165,9 @@ impl<R: ReadAt> Outboard for PreOrderOutboard<R> {
     }
 }
 
-impl<W: WriteAt> OutboardMut for PreOrderOutboard<W> {
+impl<W: WriteAt, H: Hasher> OutboardMut for PreOrderOutboard<W, H> {
+    type Hasher = H;
+
     fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         let Some(offset) = self.tree.pre_order_offset(node) else {
             return Ok(());
@@ -171,7 +185,7 @@ impl<W: WriteAt> OutboardMut for PreOrderOutboard<W> {
     }
 }
 
-impl<W: WriteAt> CreateOutboard for PreOrderOutboard<W> {
+impl<W: WriteAt, H: Hasher> CreateOutboard for PreOrderOutboard<W, H> {
     fn create_sized(data: impl Read, size: u64, block_size: BlockSize) -> io::Result<Self>
     where
         Self: Default + Sized,
@@ -195,7 +209,7 @@ impl<W: WriteAt> CreateOutboard for PreOrderOutboard<W> {
     }
 }
 
-impl<W: WriteAt> CreateOutboard for PostOrderOutboard<W> {
+impl<W: WriteAt, H: Hasher> CreateOutboard for PostOrderOutboard<W, H> {
     fn create_sized(data: impl Read, size: u64, block_size: BlockSize) -> io::Result<Self>
     where
         Self: Default + Sized,
@@ -219,7 +233,9 @@ impl<W: WriteAt> CreateOutboard for PostOrderOutboard<W> {
     }
 }
 
-impl<W: WriteAt> OutboardMut for PostOrderOutboard<W> {
+impl<W: WriteAt, H: Hasher> OutboardMut for PostOrderOutboard<W, H> {
+    type Hasher = H;
+
     fn save(&mut self, node: TreeNode, hash_pair: &(Hash, Hash)) -> io::Result<()> {
         let Some(offset) = self.tree.post_order_offset(node) else {
             return Ok(());
@@ -237,7 +253,9 @@ impl<W: WriteAt> OutboardMut for PostOrderOutboard<W> {
     }
 }
 
-impl<R: ReadAt> Outboard for PostOrderOutboard<R> {
+impl<R: ReadAt, H: Hasher> Outboard for PostOrderOutboard<R, H> {
+    type Hasher = H;
+
     fn root(&self) -> Hash {
         self.root.clone()
     }
@@ -259,14 +277,16 @@ impl<R: ReadAt> Outboard for PostOrderOutboard<R> {
 
 /// Iterator that can be used to decode a response to a range request
 #[derive(Debug)]
-pub struct DecodeResponseIter<'a, R> {
+pub struct DecodeResponseIter<'a, R, H> {
     inner: ResponseIterRef<'a>,
     stack: SmallVec<[Hash; 10]>,
     encoded: R,
     buf: BytesMut,
+    // TODO vmx 2025-07-12: check if it sould be a hasher instance or if it should be phantom data.
+    hasher: std::marker::PhantomData<H>,
 }
 
-impl<'a, R: Read> DecodeResponseIter<'a, R> {
+impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
     /// Create a new iterator to decode a response.
     ///
     /// For decoding you need to know the root hash, block size, and the ranges that were requested.
@@ -295,6 +315,7 @@ impl<'a, R: Read> DecodeResponseIter<'a, R> {
             inner: ResponseIterRef::new(tree, ranges),
             encoded,
             buf,
+            hasher: std::marker::PhantomData,
         }
     }
 
@@ -322,7 +343,7 @@ impl<'a, R: Read> DecodeResponseIter<'a, R> {
                 let ref pair @ (ref l_hash, ref r_hash) = read_parent(&mut self.encoded)
                     .map_err(|e| DecodeError::maybe_parent_not_found(e, node))?;
                 let parent_hash = self.stack.pop().unwrap();
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = H::hash_inner(&l_hash, &r_hash, is_root);
                 if parent_hash != actual {
                     return Err(DecodeError::ParentHashMismatch(node));
                 }
@@ -350,7 +371,7 @@ impl<'a, R: Read> DecodeResponseIter<'a, R> {
                 self.encoded
                     .read_exact(&mut self.buf)
                     .map_err(|e| DecodeError::maybe_leaf_not_found(e, start_chunk))?;
-                let actual = hash_subtree(start_chunk.0, &self.buf, is_root);
+                let actual = H::hash_chunk(start_chunk.0, &self.buf, is_root);
                 let leaf_hash = self.stack.pop().unwrap();
                 if leaf_hash != actual {
                     return Err(DecodeError::LeafHashMismatch(start_chunk));
@@ -368,7 +389,7 @@ impl<'a, R: Read> DecodeResponseIter<'a, R> {
     }
 }
 
-impl<R: Read> Iterator for DecodeResponseIter<'_, R> {
+impl<R: Read, H: Hasher> Iterator for DecodeResponseIter<'_, R, H> {
     type Item = result::Result<BaoContentItem, DecodeError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -448,7 +469,7 @@ pub fn encode_ranges_validated<D: ReadAt, O: Outboard, W: Write>(
                 ..
             } => {
                 let (l_hash, r_hash) = outboard.load(node)?.unwrap();
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
                 let expected = stack.pop().unwrap();
                 if actual != expected {
                     return Err(EncodeError::ParentHashMismatch(node));
@@ -479,7 +500,7 @@ pub fn encode_ranges_validated<D: ReadAt, O: Outboard, W: Write>(
                     // write into an out buffer to ensure we detect mismatches
                     // before writing to the output.
                     out_buf.clear();
-                    let actual = encode_selected_rec(
+                    let actual = encode_selected_rec::<O::Hasher>(
                         start_chunk,
                         buf,
                         is_root,
@@ -490,7 +511,7 @@ pub fn encode_ranges_validated<D: ReadAt, O: Outboard, W: Write>(
                     );
                     (actual, &out_buf[..])
                 } else {
-                    let actual = hash_subtree(start_chunk.0, buf, is_root);
+                    let actual = O::Hasher::hash_chunk(start_chunk.0, buf, is_root);
                     #[allow(clippy::redundant_slicing)]
                     (actual, &buf[..])
                 };
@@ -519,7 +540,12 @@ where
     R: Read,
     W: WriteAt,
 {
-    let iter = DecodeResponseIter::new(outboard.root(), outboard.tree(), encoded, ranges);
+    let iter = DecodeResponseIter::<'_, R, <O as Outboard>::Hasher>::new(
+        outboard.root(),
+        outboard.tree(),
+        encoded,
+        ranges,
+    );
     for item in iter {
         match item? {
             BaoContentItem::Parent(Parent { node, pair }) => {
@@ -537,10 +563,10 @@ where
 ///
 /// Unlike [outboard_post_order], this will work with any outboard
 /// implementation, but it is not guaranteed that writes are sequential.
-pub fn outboard(
-    mut data: impl Read,
+pub fn outboard<R: Read, O: OutboardMut>(
+    mut data: R,
     tree: BaoTree,
-    mut outboard: impl OutboardMut,
+    mut outboard: O,
 ) -> io::Result<Hash> {
     let mut buffer = vec![0u8; tree.chunk_group_bytes()];
     // do not allocate for small trees
@@ -552,7 +578,8 @@ pub fn outboard(
                 let right_hash = stack.pop().unwrap();
                 let left_hash = stack.pop().unwrap();
                 outboard.save(node, &(left_hash.clone(), right_hash.clone()))?;
-                let parent = parent_cv(&left_hash, &right_hash, is_root);
+                //let parent = parent_cv(&left_hash, &right_hash, is_root);
+                let parent = O::Hasher::hash_inner(&left_hash, &right_hash, is_root);
                 stack.push(parent);
             }
             BaoChunk::Leaf {
@@ -563,7 +590,8 @@ pub fn outboard(
             } => {
                 let buf = &mut buffer[..size];
                 data.read_exact(buf)?;
-                let hash = hash_subtree(start_chunk.0, buf, is_root);
+                //let hash = hash_subtree(start_chunk.0, buf, is_root);
+                let hash = O::Hasher::hash_chunk(start_chunk.0, buf, is_root);
                 stack.push(hash);
             }
         }
@@ -579,7 +607,7 @@ pub fn outboard(
 ///
 /// This will not add the size to the output. You need to store it somewhere else
 /// or append it yourself.
-pub fn outboard_post_order(
+pub fn outboard_post_order<H: Hasher>(
     mut data: impl Read,
     tree: BaoTree,
     mut outboard: impl Write,
@@ -595,7 +623,7 @@ pub fn outboard_post_order(
                 let left_hash = stack.pop().unwrap();
                 outboard.write_all(left_hash.as_bytes())?;
                 outboard.write_all(right_hash.as_bytes())?;
-                let parent = parent_cv(&left_hash, &right_hash, is_root);
+                let parent = H::hash_inner(&left_hash, &right_hash, is_root);
                 stack.push(parent);
             }
             BaoChunk::Leaf {
@@ -606,7 +634,7 @@ pub fn outboard_post_order(
             } => {
                 let buf = &mut buffer[..size];
                 data.read_exact(buf)?;
-                let hash = hash_subtree(start_chunk.0, buf, is_root);
+                let hash = H::hash_chunk(start_chunk.0, buf, is_root);
                 stack.push(hash);
             }
         }
@@ -647,8 +675,8 @@ mod validate {
 
     use super::Outboard;
     use crate::{
-        hash_subtree, io::LocalBoxFuture, parent_cv, rec::truncate_ranges, split, BaoTree,
-        ChunkNum, ChunkRangesRef, Hash, TreeNode,
+        io::LocalBoxFuture, rec::truncate_ranges, split, BaoTree, ChunkNum, ChunkRangesRef, Hash,
+        Hasher, TreeNode,
     };
 
     /// Given a data file and an outboard, compute all valid ranges.
@@ -695,7 +723,7 @@ mod validate {
                 // special case for a tree that fits in one block / chunk group
                 let tmp = &mut buffer[..tree.size().try_into().unwrap()];
                 data.read_exact_at(0, tmp)?;
-                let actual = hash_subtree(0, tmp, true);
+                let actual = O::Hasher::hash_chunk(0, tmp, true);
                 if actual == outboard.root() {
                     co.yield_(Ok(ChunkNum(0)..tree.chunks())).await;
                 }
@@ -727,7 +755,7 @@ mod validate {
             let tmp = &mut self.buffer[..len];
             self.data.read_exact_at(range.start, tmp)?;
             // is_root is always false because the case of a single chunk group is handled before calling this function
-            let actual = hash_subtree(ChunkNum::full_chunks(range.start).0, tmp, is_root);
+            let actual = O::Hasher::hash_chunk(ChunkNum::full_chunks(range.start).0, tmp, is_root);
             if &actual == hash {
                 // yield the left range
                 self.co
@@ -761,7 +789,7 @@ mod validate {
                     // outboard is incomplete, we can't validate
                     return Ok(());
                 };
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
                 if &actual != parent_hash {
                     // hash mismatch, we can't validate
                     return Ok(());
@@ -863,7 +891,7 @@ mod validate {
                     // outboard is incomplete, we can't validate
                     return Ok(());
                 };
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = O::Hasher::hash_inner(&l_hash, &r_hash, is_root);
                 if &actual != parent_hash {
                     // hash mismatch, we can't validate
                     return Ok(());
