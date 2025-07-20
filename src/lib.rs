@@ -277,6 +277,15 @@ impl From<Hash> for [u8; 32] {
     }
 }
 
+impl fmt::Display for Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
 /// A trait that defines the hashing functions that should be used for the inner and leaf nodes.
 pub trait Hasher {
     /// The number of data bytes that should be hashed into the leaf nodes

@@ -1,7 +1,7 @@
 use std::{io::Write, path::PathBuf};
 
 use anyhow::Context;
-use bao_tree::{BaoTree, BlockSize};
+use bao_tree::{BaoTree, Blake3Hasher, BlockSize};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug, Clone)]
@@ -51,7 +51,8 @@ fn main() -> anyhow::Result<()> {
             let mut target = std::io::BufWriter::with_capacity(1024 * 1024 * 16, target);
             let t0 = std::time::Instant::now();
             let tree = BaoTree::new(size, bs);
-            let hash = bao_tree::io::sync::outboard_post_order(source, tree, &mut target)?;
+            let hash =
+                bao_tree::io::sync::outboard_post_order::<Blake3Hasher>(source, tree, &mut target)?;
             target.write_all(size.to_le_bytes().as_ref())?;
             let dt = t0.elapsed();
             let rate = size as f64 / dt.as_secs_f64();
