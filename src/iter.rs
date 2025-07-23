@@ -679,13 +679,218 @@ impl Iterator for ResponseIterRef<'_> {
     }
 }
 
-self_cell! {
+//self_cell! {
+//    pub(crate) struct ResponseIterInner {
+//        owner: ChunkRanges,
+//        #[not_covariant]
+//        dependent: ResponseIterRef,
+//    }
+//}
+
+    #[repr(transparent)]
     pub(crate) struct ResponseIterInner {
-        owner: ChunkRanges,
-        #[not_covariant]
-        dependent: ResponseIterRef,
+        unsafe_self_cell: ::self_cell::unsafe_self_cell::UnsafeSelfCell<
+            ResponseIterInner,
+            ChunkRanges,
+            ResponseIterRef<'static>,
+        >,
     }
-}
+    impl ResponseIterInner {
+        /// Constructs a new self-referential struct.
+        ///
+        /// The provided `owner` will be moved into a heap allocated box.
+        /// Followed by construction of the dependent value, by calling
+        /// `dependent_builder` with a shared reference to the owner that
+        /// remains valid for the lifetime of the constructed struct.
+        pub(crate) fn new(
+            owner: ChunkRanges,
+            dependent_builder: impl for<'_q> ::core::ops::FnOnce(
+                &'_q ChunkRanges,
+            ) -> ResponseIterRef<'_q>,
+        ) -> Self {
+            use ::core::ptr::NonNull;
+            unsafe {
+                type JoinedCell<'_q> = ::self_cell::unsafe_self_cell::JoinedCell<
+                    ChunkRanges,
+                    ResponseIterRef<'_q>,
+                >;
+                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell>();
+                if !(layout.size() != 0) {
+                    panic!("assertion failed: layout.size() != 0")
+                }
+                let joined_void_ptr = NonNull::new(
+                        ::self_cell::alloc::alloc::alloc(layout),
+                    )
+                    .unwrap();
+                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell>();
+                let (owner_ptr, dependent_ptr) = JoinedCell::_field_pointers(
+                    joined_ptr.as_ptr(),
+                );
+                owner_ptr.write(owner);
+                let drop_guard = ::self_cell::unsafe_self_cell::OwnerAndCellDropGuard::new(
+                    joined_ptr,
+                );
+                dependent_ptr.write(dependent_builder(&*owner_ptr));
+                ::core::mem::forget(drop_guard);
+                Self {
+                    unsafe_self_cell: ::self_cell::unsafe_self_cell::UnsafeSelfCell::new(
+                        joined_void_ptr,
+                    ),
+                }
+            }
+        }
+        /// Tries to create a new structure with a given dependent builder.
+        ///
+        /// Consumes owner on error.
+        pub(crate) fn try_new<Err>(
+            owner: ChunkRanges,
+            dependent_builder: impl for<'_q> ::core::ops::FnOnce(
+                &'_q ChunkRanges,
+            ) -> ::core::result::Result<ResponseIterRef<'_q>, Err>,
+        ) -> ::core::result::Result<Self, Err> {
+            use ::core::ptr::NonNull;
+            unsafe {
+                type JoinedCell<'_q> = ::self_cell::unsafe_self_cell::JoinedCell<
+                    ChunkRanges,
+                    ResponseIterRef<'_q>,
+                >;
+                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell>();
+                if !(layout.size() != 0) {
+                    panic!("assertion failed: layout.size() != 0")
+                }
+                let joined_void_ptr = NonNull::new(
+                        ::self_cell::alloc::alloc::alloc(layout),
+                    )
+                    .unwrap();
+                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell>();
+                let (owner_ptr, dependent_ptr) = JoinedCell::_field_pointers(
+                    joined_ptr.as_ptr(),
+                );
+                owner_ptr.write(owner);
+                let mut drop_guard = ::self_cell::unsafe_self_cell::OwnerAndCellDropGuard::new(
+                    joined_ptr,
+                );
+                match dependent_builder(&*owner_ptr) {
+                    ::core::result::Result::Ok(dependent) => {
+                        dependent_ptr.write(dependent);
+                        ::core::mem::forget(drop_guard);
+                        ::core::result::Result::Ok(Self {
+                            unsafe_self_cell: ::self_cell::unsafe_self_cell::UnsafeSelfCell::new(
+                                joined_void_ptr,
+                            ),
+                        })
+                    }
+                    ::core::result::Result::Err(err) => ::core::result::Result::Err(err),
+                }
+            }
+        }
+        /// Tries to create a new structure with a given dependent builder.
+        ///
+        /// Returns owner on error.
+        pub(crate) fn try_new_or_recover<Err>(
+            owner: ChunkRanges,
+            dependent_builder: impl for<'_q> ::core::ops::FnOnce(
+                &'_q ChunkRanges,
+            ) -> ::core::result::Result<ResponseIterRef<'_q>, Err>,
+        ) -> ::core::result::Result<Self, (ChunkRanges, Err)> {
+            use ::core::ptr::NonNull;
+            unsafe {
+                type JoinedCell<'_q> = ::self_cell::unsafe_self_cell::JoinedCell<
+                    ChunkRanges,
+                    ResponseIterRef<'_q>,
+                >;
+                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell>();
+                if !(layout.size() != 0) {
+                    panic!("assertion failed: layout.size() != 0")
+                }
+                let joined_void_ptr = NonNull::new(
+                        ::self_cell::alloc::alloc::alloc(layout),
+                    )
+                    .unwrap();
+                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell>();
+                let (owner_ptr, dependent_ptr) = JoinedCell::_field_pointers(
+                    joined_ptr.as_ptr(),
+                );
+                owner_ptr.write(owner);
+                let mut drop_guard = ::self_cell::unsafe_self_cell::OwnerAndCellDropGuard::new(
+                    joined_ptr,
+                );
+                match dependent_builder(&*owner_ptr) {
+                    ::core::result::Result::Ok(dependent) => {
+                        dependent_ptr.write(dependent);
+                        ::core::mem::forget(drop_guard);
+                        ::core::result::Result::Ok(Self {
+                            unsafe_self_cell: ::self_cell::unsafe_self_cell::UnsafeSelfCell::new(
+                                joined_void_ptr,
+                            ),
+                        })
+                    }
+                    ::core::result::Result::Err(err) => {
+                        let owner_on_err = ::core::ptr::read(owner_ptr);
+                        ::core::mem::forget(drop_guard);
+                        ::self_cell::alloc::alloc::dealloc(
+                            joined_void_ptr.as_ptr(),
+                            layout,
+                        );
+                        ::core::result::Result::Err((owner_on_err, err))
+                    }
+                }
+            }
+        }
+        /// Borrows owner.
+        pub(crate) fn borrow_owner<'_q>(&'_q self) -> &'_q ChunkRanges {
+            unsafe { self.unsafe_self_cell.borrow_owner::<ResponseIterRef<'_q>>() }
+        }
+        /// Calls given closure `func` with a shared reference to dependent.
+        pub(crate) fn with_dependent<'outer_fn, Ret>(
+            &'outer_fn self,
+            func: impl for<'_q> ::core::ops::FnOnce(
+                &'_q ChunkRanges,
+                &'outer_fn ResponseIterRef<'_q>,
+            ) -> Ret,
+        ) -> Ret {
+            unsafe {
+                func(
+                    self.unsafe_self_cell.borrow_owner::<ResponseIterRef>(),
+                    self.unsafe_self_cell.borrow_dependent(),
+                )
+            }
+        }
+        /// Calls given closure `func` with an unique reference to dependent.
+        pub(crate) fn with_dependent_mut<'outer_fn, Ret>(
+            &'outer_fn mut self,
+            func: impl for<'_q> ::core::ops::FnOnce(
+                &'_q ChunkRanges,
+                &'outer_fn mut ResponseIterRef<'_q>,
+            ) -> Ret,
+        ) -> Ret {
+            let (owner, dependent) = unsafe { self.unsafe_self_cell.borrow_mut() };
+            func(owner, dependent)
+        }
+        /// Consumes `self` and returns the the owner.
+        pub(crate) fn into_owner(self) -> ChunkRanges {
+            let unsafe_self_cell = unsafe {
+                ::core::mem::transmute::<
+                    Self,
+                    ::self_cell::unsafe_self_cell::UnsafeSelfCell<
+                        ResponseIterInner,
+                        ChunkRanges,
+                        ResponseIterRef<'static>,
+                    >,
+                >(self)
+            };
+            let owner = unsafe { unsafe_self_cell.into_owner::<ResponseIterRef>() };
+            owner
+        }
+    }
+    impl Drop for ResponseIterInner {
+        fn drop(&mut self) {
+            unsafe {
+                self.unsafe_self_cell.drop_joined::<ResponseIterRef>();
+            }
+        }
+    }
+
 
 impl ResponseIterInner {
     fn next(&mut self) -> Option<BaoChunk> {
