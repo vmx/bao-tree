@@ -632,6 +632,7 @@ pub fn outboard_post_order<H: Hasher>(
                 start_chunk,
                 ..
             } => {
+                dbg!(size);
                 let buf = &mut buffer[..size];
                 data.read_exact(buf)?;
                 let hash = H::hash_chunk(start_chunk.0, buf, is_root);

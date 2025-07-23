@@ -324,7 +324,7 @@ fn blake3_hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
         blake3::hash(data)
     } else {
         let mut hasher = blake3::Hasher::new();
-        hasher.set_input_offset(start_chunk * 1024);
+        hasher.set_input_offset(start_chunk * Blake3Hasher::CHUNK_SIZE as u64);
         hasher.update(data);
         let non_root_hash: ChainingValue = hasher.finalize_non_root();
         blake3::Hash::from(non_root_hash)
@@ -387,6 +387,9 @@ impl PostOrderOffset {
     }
 }
 
+//const CHUNK_SIZE: usize = 10;
+const CHUNK_SIZE: u8 = 6;
+
 impl BaoTree {
     /// Create a new self contained BaoTree
     pub fn new(size: u64, block_size: BlockSize) -> Self {
@@ -408,7 +411,7 @@ impl BaoTree {
     pub(crate) fn shifted(&self) -> (TreeNode, TreeNode) {
         let level = self.block_size.0;
         let size = self.size;
-        let shift = 10 + level;
+        let shift = CHUNK_SIZE + level;
         let mask = (1 << shift) - 1;
         // number of full blocks of size 1024 << level
         let full_blocks = size >> shift;

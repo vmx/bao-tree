@@ -116,7 +116,11 @@ impl ChunkNum {
     }
 }
 
-pub(crate) const BLAKE3_CHUNK_SIZE: usize = 1024;
+//pub(crate) const BLAKE3_CHUNK_SIZE: usize = 1024;
+//pub(crate) const BLAKE3_LOG2_CHUNK_SIZE: usize = 10;
+const LOG2_CHUNK_SIZE: usize = 6;
+const CHUNK_SIZE: usize = 1 << LOG2_CHUNK_SIZE;
+//pub(crate) const CHUNK_SIZE: u32 = 1 << LOG2_CHUNK_SIZE;
 
 /// A block size.
 ///
@@ -157,7 +161,8 @@ impl BlockSize {
 
     /// Number of bytes in a block at this level
     pub const fn bytes(self) -> usize {
-        BLAKE3_CHUNK_SIZE << self.0
+        CHUNK_SIZE << self.0
+        //32 << self.0
     }
 
     /// Compute a block size from bytes
@@ -166,11 +171,12 @@ impl BlockSize {
             // must be a power of 2
             return None;
         }
-        if bytes < 1024 {
+        if bytes < CHUNK_SIZE as u64{
             // must be at least 1024 bytes
             return None;
         }
-        Some(Self((bytes.trailing_zeros() - 10) as u8))
+        //Some(Self((bytes.trailing_zeros() - 10) as u8))
+        Some(Self((bytes.trailing_zeros() - LOG2_CHUNK_SIZE as u32) as u8))
     }
 
     /// Convert to an u32 for comparison with levels
@@ -197,9 +203,9 @@ impl ChunkNum {
     ///
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is 2 chunks
     pub const fn chunks(size: u64) -> ChunkNum {
-        let mask = (1 << 10) - 1;
+        let mask = (CHUNK_SIZE as u64) - 1;
         let part = ((size & mask) != 0) as u64;
-        let whole = size >> 10;
+        let whole = size >> LOG2_CHUNK_SIZE;
         ChunkNum(whole + part)
     }
 
@@ -207,11 +213,11 @@ impl ChunkNum {
     ///
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is still 1 chunk
     pub const fn full_chunks(size: u64) -> ChunkNum {
-        ChunkNum(size >> 10)
+        ChunkNum(size >> LOG2_CHUNK_SIZE)
     }
 
     /// number of bytes that this number of chunks covers
     pub const fn to_bytes(&self) -> u64 {
-        self.0 << 10
+        self.0 << LOG2_CHUNK_SIZE
     }
 }
