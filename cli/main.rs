@@ -1,10 +1,14 @@
-use std::{io::{self, Write}, path::PathBuf, cmp};
+use std::{
+    cmp,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use anyhow::Context;
 use bao_tree::{BaoTree, Blake3Hasher, BlockSize, Hash, Hasher};
 use clap::{Parser, Subcommand};
-use sha2::{Digest, Sha256};
 use fr32::Fr32Reader;
+use sha2::{Digest, Sha256};
 
 #[derive(Parser, Debug, Clone)]
 #[clap(version)]
@@ -30,7 +34,7 @@ pub enum Command {
 }
 
 /// The hasher implementation for using BLAKE3.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CommpHasher;
 
 impl Hasher for CommpHasher {
@@ -72,7 +76,11 @@ struct Base2PadReader<R: io::Read> {
 
 impl<R: io::Read> io::Read for Base2PadReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        println!("vmx: base2padreader: pos, buf len: {:?} {:?}", self.pos, buf.len());
+        println!(
+            "vmx: base2padreader: pos, buf len: {:?} {:?}",
+            self.pos,
+            buf.len()
+        );
         let cs = if self.pos >= self.size {
             println!("vmx: do padding");
             for i in 0..buf.len() {
@@ -100,10 +108,9 @@ fn padded_size(size: u64) -> u64 {
     if size <= bound {
         bound
     } else {
-       piece_size(size, true)
+        piece_size(size, true)
     }
 }
-
 
 fn base2_padded<R: Sized + io::Read>(inp: &mut R, size: u64) -> Base2PadReader<&mut R> {
     let padded_size = padded_size(size);
@@ -118,7 +125,6 @@ fn base2_padded<R: Sized + io::Read>(inp: &mut R, size: u64) -> Base2PadReader<&
 
     base2_pad_reader
 }
-
 
 /// A reader that appends zeros to the end of the data from the underlying reader.
 pub struct ZeroPaddingReader<R> {
@@ -164,7 +170,6 @@ impl<R: io::Read> io::Read for ZeroPaddingReader<R> {
     }
 }
 
-
 /// A reader that wraps another reader and appends a given number of zero bytes at the end.
 pub struct ReadWithTrailingZeros<R: io::Read> {
     inner: R,
@@ -185,7 +190,10 @@ impl<R: io::Read> ReadWithTrailingZeros<R> {
 
 impl<R: io::Read> io::Read for ReadWithTrailingZeros<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        println!("vmx: readwithtrailingzeros: zeros appended: {:?}", self.zeros_appended);
+        println!(
+            "vmx: readwithtrailingzeros: zeros appended: {:?}",
+            self.zeros_appended
+        );
         // If we still have data to read from the underlying reader
         if self.zeros_appended == 0 {
             let n = self.inner.read(buf)?;

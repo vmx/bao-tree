@@ -7,7 +7,7 @@ use std::fmt::{self, Debug};
 use self_cell::self_cell;
 use smallvec::SmallVec;
 
-use crate::{split, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, TreeNode};
+use crate::{split, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hasher, TreeNode};
 
 /// Extended node info.
 ///
@@ -41,9 +41,9 @@ pub struct NodeInfo<'a> {
 /// This is mostly used internally
 #[derive(Debug)]
 #[cfg(test)]
-pub struct PreOrderPartialIterRef<'a> {
+pub struct PreOrderPartialIterRef<'a, H> {
     /// the tree we want to traverse
-    tree: BaoTree,
+    tree: BaoTree<H>,
     /// the minimum level to always emit, even if the node is fully within the query range
     min_level: u8,
     /// stack of nodes to visit, together with the ranges that are relevant for the node
@@ -59,9 +59,9 @@ pub struct PreOrderPartialIterRef<'a> {
 }
 
 #[cfg(test)]
-impl<'a> PreOrderPartialIterRef<'a> {
+impl<'a, H: Hasher> PreOrderPartialIterRef<'a, H> {
     /// Create a new iterator over the tree.
-    pub fn new(tree: BaoTree, ranges: &'a ChunkRangesRef, min_level: u8) -> Self {
+    pub fn new(tree: BaoTree<H>, ranges: &'a ChunkRangesRef, min_level: u8) -> Self {
         let mut stack = SmallVec::new();
         let (shifted_root, shifted_filled_size) = tree.shifted();
         stack.push((shifted_root, ranges));
@@ -75,13 +75,13 @@ impl<'a> PreOrderPartialIterRef<'a> {
     }
 
     /// Get a reference to the tree.
-    pub fn tree(&self) -> &BaoTree {
+    pub fn tree(&self) -> &BaoTree<H> {
         &self.tree
     }
 }
 
 #[cfg(test)]
-impl<'a> Iterator for PreOrderPartialIterRef<'a> {
+impl<'a, H: Hasher> Iterator for PreOrderPartialIterRef<'a, H> {
     type Item = NodeInfo<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -388,17 +388,17 @@ impl<T> BaoChunk<T> {
 
 /// Iterator over all chunks in a BaoTree in post-order.
 #[derive(Debug)]
-pub struct PostOrderChunkIter {
-    tree: BaoTree,
+pub struct PostOrderChunkIter<H> {
+    tree: BaoTree<H>,
     inner: PostOrderNodeIter,
     // stack with 2 elements, since we can only have 2 items in flight
     stack: SmallVec<[BaoChunk; 2]>,
     shifted_root: TreeNode,
 }
 
-impl PostOrderChunkIter {
+impl<H: Hasher> PostOrderChunkIter<H> {
     /// Create a new iterator over the tree.
-    pub fn new(tree: BaoTree) -> Self {
+    pub fn new(tree: BaoTree<H>) -> Self {
         let (shifted_root, shifted_len) = tree.shifted();
         let inner = PostOrderNodeIter::new(shifted_root, shifted_len);
         Self {
@@ -410,7 +410,7 @@ impl PostOrderChunkIter {
     }
 }
 
-impl Iterator for PostOrderChunkIter {
+impl<H: Hasher> Iterator for PostOrderChunkIter<H> {
     type Item = BaoChunk;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -489,9 +489,9 @@ impl<T: Default> Default for BaoChunk<T> {
 ///
 /// This is mostly used internally
 #[derive(Debug)]
-pub struct PreOrderPartialChunkIterRef<'a> {
+pub struct PreOrderPartialChunkIterRef<'a, H> {
     /// the tree we want to traverse
-    tree: BaoTree,
+    tree: BaoTree<H>,
     /// the minimum level to always emit, even if the node is fully within the query range
     min_full_level: u8,
     /// stack of nodes to visit, together with the ranges that are relevant for the node
@@ -508,9 +508,9 @@ pub struct PreOrderPartialChunkIterRef<'a> {
     buffer: SmallVec<[BaoChunk<&'a ChunkRangesRef>; 2]>,
 }
 
-impl<'a> PreOrderPartialChunkIterRef<'a> {
+impl<'a, H: Hasher> PreOrderPartialChunkIterRef<'a, H> {
     /// Create a new iterator over the tree.
-    pub fn new(tree: BaoTree, ranges: &'a ChunkRangesRef, min_full_level: u8) -> Self {
+    pub fn new(tree: BaoTree<H>, ranges: &'a ChunkRangesRef, min_full_level: u8) -> Self {
         let mut stack = SmallVec::new();
         let (shifted_root, shifted_filled_size) = tree.shifted();
         stack.push((shifted_root, ranges));
@@ -525,7 +525,7 @@ impl<'a> PreOrderPartialChunkIterRef<'a> {
     }
 
     /// Get a reference to the tree.
-    pub fn tree(&self) -> &BaoTree {
+    pub fn tree(&self) -> &BaoTree<H> {
         &self.tree
     }
 
@@ -535,7 +535,7 @@ impl<'a> PreOrderPartialChunkIterRef<'a> {
     }
 }
 
-impl<'a> Iterator for PreOrderPartialChunkIterRef<'a> {
+impl<'a, H: Hasher> Iterator for PreOrderPartialChunkIterRef<'a, H> {
     type Item = BaoChunk<&'a ChunkRangesRef>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -648,30 +648,30 @@ impl<'a> Iterator for PreOrderPartialChunkIterRef<'a> {
 /// This wraps a `PreOrderPartialIterRef` and iterates over the chunk groups
 /// all the way down to individual chunks if needed.
 #[derive(Debug)]
-pub struct ResponseIterRef<'a> {
-    inner: PreOrderPartialChunkIterRef<'a>,
+pub struct ResponseIterRef<'a, H> {
+    inner: PreOrderPartialChunkIterRef<'a, H>,
 }
 
-impl<'a> ResponseIterRef<'a> {
+impl<'a, H: Hasher> ResponseIterRef<'a, H> {
     /// Create a new iterator over the tree.
-    pub fn new(tree: BaoTree, ranges: &'a ChunkRangesRef) -> Self {
-        let tree1 = BaoTree::new(tree.size, BlockSize::ZERO);
+    pub fn new(tree: BaoTree<H>, ranges: &'a ChunkRangesRef) -> Self {
+        let tree1 = BaoTree::<H>::new(tree.size, BlockSize::ZERO);
         Self {
             inner: PreOrderPartialChunkIterRef::new(tree1, ranges, tree.block_size.0),
         }
     }
 
     /// Return the underlying tree.
-    pub fn tree(&self) -> BaoTree {
+    pub fn tree(&self) -> BaoTree<H> {
         // the inner iterator uses a tree with block size 0, so we need to return the original tree
-        BaoTree::new(
+        BaoTree::<H>::new(
             self.inner.tree().size,
             BlockSize(self.inner.min_full_level()),
         )
     }
 }
 
-impl Iterator for ResponseIterRef<'_> {
+impl<H: Hasher> Iterator for ResponseIterRef<'_, H> {
     type Item = BaoChunk;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -688,14 +688,14 @@ impl Iterator for ResponseIterRef<'_> {
 //}
 
     #[repr(transparent)]
-    pub(crate) struct ResponseIterInner {
+    pub(crate) struct ResponseIterInner<H: 'static> {
         unsafe_self_cell: ::self_cell::unsafe_self_cell::UnsafeSelfCell<
-            ResponseIterInner,
+            ResponseIterInner<H>,
             ChunkRanges,
-            ResponseIterRef<'static>,
+            ResponseIterRef<'static, H>,
         >,
     }
-    impl ResponseIterInner {
+    impl<H> ResponseIterInner<H> {
         /// Constructs a new self-referential struct.
         ///
         /// The provided `owner` will be moved into a heap allocated box.
@@ -706,15 +706,15 @@ impl Iterator for ResponseIterRef<'_> {
             owner: ChunkRanges,
             dependent_builder: impl for<'_q> ::core::ops::FnOnce(
                 &'_q ChunkRanges,
-            ) -> ResponseIterRef<'_q>,
+            ) -> ResponseIterRef<'_q, H>,
         ) -> Self {
             use ::core::ptr::NonNull;
             unsafe {
-                type JoinedCell<'_q> = ::self_cell::unsafe_self_cell::JoinedCell<
+                type JoinedCell<'_q, H2> = ::self_cell::unsafe_self_cell::JoinedCell<
                     ChunkRanges,
-                    ResponseIterRef<'_q>,
+                    ResponseIterRef<'_q, H2>,
                 >;
-                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell>();
+                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell<'_, H>>();
                 if !(layout.size() != 0) {
                     panic!("assertion failed: layout.size() != 0")
                 }
@@ -722,7 +722,7 @@ impl Iterator for ResponseIterRef<'_> {
                         ::self_cell::alloc::alloc::alloc(layout),
                     )
                     .unwrap();
-                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell>();
+                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell<'_, _>>();
                 let (owner_ptr, dependent_ptr) = JoinedCell::_field_pointers(
                     joined_ptr.as_ptr(),
                 );
@@ -746,15 +746,15 @@ impl Iterator for ResponseIterRef<'_> {
             owner: ChunkRanges,
             dependent_builder: impl for<'_q> ::core::ops::FnOnce(
                 &'_q ChunkRanges,
-            ) -> ::core::result::Result<ResponseIterRef<'_q>, Err>,
+            ) -> ::core::result::Result<ResponseIterRef<'_q, H>, Err>,
         ) -> ::core::result::Result<Self, Err> {
             use ::core::ptr::NonNull;
             unsafe {
-                type JoinedCell<'_q> = ::self_cell::unsafe_self_cell::JoinedCell<
+                type JoinedCell<'_q, H2> = ::self_cell::unsafe_self_cell::JoinedCell<
                     ChunkRanges,
-                    ResponseIterRef<'_q>,
+                    ResponseIterRef<'_q, H2>,
                 >;
-                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell>();
+                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell<'_, H>>();
                 if !(layout.size() != 0) {
                     panic!("assertion failed: layout.size() != 0")
                 }
@@ -762,7 +762,7 @@ impl Iterator for ResponseIterRef<'_> {
                         ::self_cell::alloc::alloc::alloc(layout),
                     )
                     .unwrap();
-                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell>();
+                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell<'_, _>>();
                 let (owner_ptr, dependent_ptr) = JoinedCell::_field_pointers(
                     joined_ptr.as_ptr(),
                 );
@@ -791,15 +791,15 @@ impl Iterator for ResponseIterRef<'_> {
             owner: ChunkRanges,
             dependent_builder: impl for<'_q> ::core::ops::FnOnce(
                 &'_q ChunkRanges,
-            ) -> ::core::result::Result<ResponseIterRef<'_q>, Err>,
+            ) -> ::core::result::Result<ResponseIterRef<'_q, H>, Err>,
         ) -> ::core::result::Result<Self, (ChunkRanges, Err)> {
             use ::core::ptr::NonNull;
             unsafe {
-                type JoinedCell<'_q> = ::self_cell::unsafe_self_cell::JoinedCell<
+                type JoinedCell<'_q, H2> = ::self_cell::unsafe_self_cell::JoinedCell<
                     ChunkRanges,
-                    ResponseIterRef<'_q>,
+                    ResponseIterRef<'_q, H2>,
                 >;
-                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell>();
+                let layout = ::self_cell::alloc::alloc::Layout::new::<JoinedCell<'_, H>>();
                 if !(layout.size() != 0) {
                     panic!("assertion failed: layout.size() != 0")
                 }
@@ -807,7 +807,7 @@ impl Iterator for ResponseIterRef<'_> {
                         ::self_cell::alloc::alloc::alloc(layout),
                     )
                     .unwrap();
-                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell>();
+                let mut joined_ptr = joined_void_ptr.cast::<JoinedCell<'_, _>>();
                 let (owner_ptr, dependent_ptr) = JoinedCell::_field_pointers(
                     joined_ptr.as_ptr(),
                 );
@@ -839,19 +839,19 @@ impl Iterator for ResponseIterRef<'_> {
         }
         /// Borrows owner.
         pub(crate) fn borrow_owner<'_q>(&'_q self) -> &'_q ChunkRanges {
-            unsafe { self.unsafe_self_cell.borrow_owner::<ResponseIterRef<'_q>>() }
+            unsafe { self.unsafe_self_cell.borrow_owner::<ResponseIterRef<'_q, H>>() }
         }
         /// Calls given closure `func` with a shared reference to dependent.
         pub(crate) fn with_dependent<'outer_fn, Ret>(
             &'outer_fn self,
             func: impl for<'_q> ::core::ops::FnOnce(
                 &'_q ChunkRanges,
-                &'outer_fn ResponseIterRef<'_q>,
+                &'outer_fn ResponseIterRef<'_q, H>,
             ) -> Ret,
         ) -> Ret {
             unsafe {
                 func(
-                    self.unsafe_self_cell.borrow_owner::<ResponseIterRef>(),
+                    self.unsafe_self_cell.borrow_owner::<ResponseIterRef<H>>(),
                     self.unsafe_self_cell.borrow_dependent(),
                 )
             }
@@ -861,7 +861,7 @@ impl Iterator for ResponseIterRef<'_> {
             &'outer_fn mut self,
             func: impl for<'_q> ::core::ops::FnOnce(
                 &'_q ChunkRanges,
-                &'outer_fn mut ResponseIterRef<'_q>,
+                &'outer_fn mut ResponseIterRef<'_q, H>,
             ) -> Ret,
         ) -> Ret {
             let (owner, dependent) = unsafe { self.unsafe_self_cell.borrow_mut() };
@@ -873,59 +873,58 @@ impl Iterator for ResponseIterRef<'_> {
                 ::core::mem::transmute::<
                     Self,
                     ::self_cell::unsafe_self_cell::UnsafeSelfCell<
-                        ResponseIterInner,
+                        ResponseIterInner<H>,
                         ChunkRanges,
-                        ResponseIterRef<'static>,
+                        ResponseIterRef<'static, H>,
                     >,
                 >(self)
             };
-            let owner = unsafe { unsafe_self_cell.into_owner::<ResponseIterRef>() };
+            let owner = unsafe { unsafe_self_cell.into_owner::<ResponseIterRef<H>>() };
             owner
         }
     }
-    impl Drop for ResponseIterInner {
+    impl<H> Drop for ResponseIterInner<H> {
         fn drop(&mut self) {
             unsafe {
-                self.unsafe_self_cell.drop_joined::<ResponseIterRef>();
+                self.unsafe_self_cell.drop_joined::<ResponseIterRef<H>>();
             }
         }
     }
 
-
-impl ResponseIterInner {
+impl<H: Hasher> ResponseIterInner<H> {
     fn next(&mut self) -> Option<BaoChunk> {
         self.with_dependent_mut(|_, iter| iter.next())
     }
 
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<H> {
         self.with_dependent(|_, iter| iter.tree())
     }
 }
 
 /// The owned version of `ResponseIterRef`.
-pub struct ResponseIter(ResponseIterInner);
+pub struct ResponseIter<H: 'static>(ResponseIterInner<H>);
 
-impl fmt::Debug for ResponseIter {
+impl<H> fmt::Debug for ResponseIter<H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ResponseIter").finish_non_exhaustive()
     }
 }
 
-impl ResponseIter {
+impl<H: Hasher> ResponseIter<H> {
     /// Create a new iterator over the tree.
-    pub fn new(tree: BaoTree, ranges: ChunkRanges) -> Self {
+    pub fn new(tree: BaoTree<H>, ranges: ChunkRanges) -> Self {
         Self(ResponseIterInner::new(ranges, |ranges| {
             ResponseIterRef::new(tree, ranges)
         }))
     }
 
     /// The tree this iterator is iterating over.
-    pub fn tree(&self) -> BaoTree {
+    pub fn tree(&self) -> BaoTree<H> {
         self.0.tree()
     }
 }
 
-impl Iterator for ResponseIter {
+impl<H: Hasher> Iterator for ResponseIter<H> {
     type Item = BaoChunk;
 
     fn next(&mut self) -> Option<Self::Item> {

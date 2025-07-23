@@ -63,7 +63,7 @@ pub trait Outboard {
     /// The root hash
     fn root(&self) -> Hash;
     /// The tree. This contains the information about the size of the file and the block size.
-    fn tree(&self) -> BaoTree;
+    fn tree(&self) -> BaoTree<Self::Hasher>;
     /// load the hash pair for a node
     ///
     /// This takes a &mut self not because it mutates the outboard (it doesn't),
@@ -139,7 +139,7 @@ impl<O: Outboard> Outboard for &mut O {
         (**self).root()
     }
 
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         (**self).tree()
     }
 
@@ -155,7 +155,7 @@ impl<R: AsyncSliceReader, H: Hasher> Outboard for PreOrderOutboard<R, H> {
         self.root.clone()
     }
 
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         self.tree
     }
 
@@ -284,7 +284,7 @@ impl<R: AsyncSliceReader, H: Hasher> Outboard for PostOrderOutboard<R, H> {
         self.root.clone()
     }
 
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         self.tree
     }
 
@@ -315,14 +315,14 @@ pub(crate) fn parse_hash_pair(buf: Bytes) -> io::Result<(Hash, Hash)> {
 }
 
 #[derive(Debug)]
-struct ResponseDecoderInner<R> {
-    iter: ResponseIter,
+struct ResponseDecoderInner<R, H: 'static> {
+    iter: ResponseIter<H>,
     stack: SmallVec<[Hash; 10]>,
     encoded: R,
 }
 
-impl<R> ResponseDecoderInner<R> {
-    fn new(tree: BaoTree, hash: Hash, ranges: ChunkRanges, encoded: R) -> Self {
+impl<R, H: Hasher> ResponseDecoderInner<R, H> {
+    fn new(tree: BaoTree<H>, hash: Hash, ranges: ChunkRanges, encoded: R) -> Self {
         // now that we know the size, we can canonicalize the ranges
         let ranges = truncate_ranges_owned(ranges, tree.size());
         let mut res = Self {
@@ -337,14 +337,14 @@ impl<R> ResponseDecoderInner<R> {
 
 /// Response decoder
 #[derive(Debug)]
-pub struct ResponseDecoder<R, H> {
-    inner: Box<ResponseDecoderInner<R>>,
-    hasher: std::marker::PhantomData<H>,
+pub struct ResponseDecoder<R, H: 'static> {
+    inner: Box<ResponseDecoderInner<R, H>>,
+    //hasher: std::marker::PhantomData<H>,
 }
 
 /// Next type for ResponseDecoder.
 #[derive(Debug)]
-pub enum ResponseDecoderNext<R, H> {
+pub enum ResponseDecoderNext<R, H: 'static> {
     /// One more item, and you get back the state machine in the next state
     More(
         (
@@ -356,14 +356,13 @@ pub enum ResponseDecoderNext<R, H> {
     Done(R),
 }
 
-impl<R: AsyncStreamReader, H: Hasher> ResponseDecoder<R, H> {
+impl<R: AsyncStreamReader, H: Hasher + 'static> ResponseDecoder<R, H> {
     /// Create a new response decoder state machine, when you have already read the size.
     ///
     /// The size as well as the chunk size is given in the `tree` parameter.
-    pub fn new(hash: Hash, ranges: ChunkRanges, tree: BaoTree, encoded: R) -> Self {
+    pub fn new(hash: Hash, ranges: ChunkRanges, tree: BaoTree<H>, encoded: R) -> Self {
         Self {
             inner: Box::new(ResponseDecoderInner::new(tree, hash, ranges, encoded)),
-            hasher: std::marker::PhantomData::<H>,
         }
     }
 
@@ -383,7 +382,7 @@ impl<R: AsyncStreamReader, H: Hasher> ResponseDecoder<R, H> {
     }
 
     /// The tree geometry
-    pub fn tree(&self) -> BaoTree {
+    pub fn tree(&self) -> BaoTree<H> {
         self.inner.iter.tree()
     }
 
@@ -610,6 +609,7 @@ pub async fn decode_ranges<R, O, W>(
 ) -> std::result::Result<(), DecodeError>
 where
     O: OutboardMut + Outboard,
+    <O as Outboard>::Hasher: 'static,
     R: AsyncStreamReader,
     W: AsyncSliceWriter,
 {
@@ -650,7 +650,7 @@ fn read_parent(buf: &[u8]) -> (Hash, Hash) {
 /// implementation, but it is not guaranteed that writes are sequential.
 pub async fn outboard<R: AsyncStreamReader, O: OutboardMut>(
     mut data: R,
-    tree: BaoTree,
+    tree: BaoTree<O::Hasher>,
     mut outboard: O,
 ) -> io::Result<Hash> {
     // do not allocate for small trees
@@ -691,7 +691,7 @@ pub async fn outboard<R: AsyncStreamReader, O: OutboardMut>(
 /// or append it yourself.
 pub async fn outboard_post_order<H: Hasher>(
     mut data: impl AsyncStreamReader,
-    tree: BaoTree,
+    tree: BaoTree<H>,
     mut outboard: impl AsyncStreamWriter,
 ) -> io::Result<Hash> {
     // do not allocate for small trees
@@ -774,7 +774,7 @@ mod validate {
     }
 
     struct RecursiveDataValidator<'a, O: Outboard, D: AsyncSliceReader> {
-        tree: BaoTree,
+        tree: BaoTree<O::Hasher>,
         shifted_filled_size: TreeNode,
         outboard: O,
         data: D,
@@ -904,7 +904,7 @@ mod validate {
     }
 
     struct RecursiveOutboardValidator<'a, O: Outboard> {
-        tree: BaoTree,
+        tree: BaoTree<O::Hasher>,
         shifted_filled_size: TreeNode,
         outboard: O,
         co: &'a Co<io::Result<Range<ChunkNum>>>,

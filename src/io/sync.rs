@@ -48,7 +48,7 @@ pub trait Outboard {
     /// The root hash
     fn root(&self) -> Hash;
     /// The tree. This contains the information about the size of the file and the block size.
-    fn tree(&self) -> BaoTree;
+    fn tree(&self) -> BaoTree<Self::Hasher>;
     /// load the hash pair for a node
     fn load(&self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>>;
 }
@@ -121,7 +121,7 @@ impl<O: Outboard> Outboard for &O {
     fn root(&self) -> Hash {
         (**self).root()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         (**self).tree()
     }
     fn load(&self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -135,7 +135,7 @@ impl<O: Outboard> Outboard for &mut O {
     fn root(&self) -> Hash {
         (**self).root()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         (**self).tree()
     }
     fn load(&self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -150,7 +150,7 @@ impl<R: ReadAt, H: Hasher> Outboard for PreOrderOutboard<R, H> {
         self.root.clone()
     }
 
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         self.tree
     }
 
@@ -260,7 +260,7 @@ impl<R: ReadAt, H: Hasher> Outboard for PostOrderOutboard<R, H> {
         self.root.clone()
     }
 
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<H> {
         self.tree
     }
 
@@ -278,12 +278,10 @@ impl<R: ReadAt, H: Hasher> Outboard for PostOrderOutboard<R, H> {
 /// Iterator that can be used to decode a response to a range request
 #[derive(Debug)]
 pub struct DecodeResponseIter<'a, R, H> {
-    inner: ResponseIterRef<'a>,
+    inner: ResponseIterRef<'a, H>,
     stack: SmallVec<[Hash; 10]>,
     encoded: R,
     buf: BytesMut,
-    // TODO vmx 2025-07-12: check if it sould be a hasher instance or if it should be phantom data.
-    hasher: std::marker::PhantomData<H>,
 }
 
 impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
@@ -291,7 +289,7 @@ impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
     ///
     /// For decoding you need to know the root hash, block size, and the ranges that were requested.
     /// Additionally you need to provide a reader that can be used to read the encoded data.
-    pub fn new(root: Hash, tree: BaoTree, encoded: R, ranges: &'a ChunkRangesRef) -> Self {
+    pub fn new(root: Hash, tree: BaoTree<H>, encoded: R, ranges: &'a ChunkRangesRef) -> Self {
         let buf = BytesMut::with_capacity(tree.block_size().bytes());
         Self::new_with_buffer(root, tree, encoded, ranges, buf)
     }
@@ -302,7 +300,7 @@ impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
     /// The buffer will be resized as needed, but it's capacity should be the [crate::BlockSize::bytes].
     pub fn new_with_buffer(
         root: Hash,
-        tree: BaoTree,
+        tree: BaoTree<H>,
         encoded: R,
         ranges: &'a ChunkRangesRef,
         buf: BytesMut,
@@ -315,7 +313,6 @@ impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
             inner: ResponseIterRef::new(tree, ranges),
             encoded,
             buf,
-            hasher: std::marker::PhantomData,
         }
     }
 
@@ -327,7 +324,7 @@ impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
     /// Get a reference to the tree used for decoding.
     ///
     /// This is only available after the first chunk has been decoded.
-    pub fn tree(&self) -> BaoTree {
+    pub fn tree(&self) -> BaoTree<H> {
         self.inner.tree()
     }
 
@@ -565,7 +562,7 @@ where
 /// implementation, but it is not guaranteed that writes are sequential.
 pub fn outboard<R: Read, O: OutboardMut>(
     mut data: R,
-    tree: BaoTree,
+    tree: BaoTree<O::Hasher>,
     mut outboard: O,
 ) -> io::Result<Hash> {
     let mut buffer = vec![0u8; tree.chunk_group_bytes()];
@@ -609,7 +606,7 @@ pub fn outboard<R: Read, O: OutboardMut>(
 /// or append it yourself.
 pub fn outboard_post_order<H: Hasher>(
     mut data: impl Read,
-    tree: BaoTree,
+    tree: BaoTree<H>,
     mut outboard: impl Write,
 ) -> io::Result<Hash> {
     let mut buffer = vec![0u8; tree.chunk_group_bytes()];
@@ -703,7 +700,7 @@ mod validate {
     }
 
     struct RecursiveDataValidator<'a, O: Outboard, D: ReadAt> {
-        tree: BaoTree,
+        tree: BaoTree<O::Hasher>,
         shifted_filled_size: TreeNode,
         outboard: O,
         data: D,
@@ -833,7 +830,7 @@ mod validate {
     }
 
     struct RecursiveOutboardValidator<'a, O: Outboard> {
-        tree: BaoTree,
+        tree: BaoTree<O::Hasher>,
         shifted_filled_size: TreeNode,
         outboard: O,
         co: &'a Co<io::Result<Range<ChunkNum>>>,

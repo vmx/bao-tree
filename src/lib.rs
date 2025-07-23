@@ -286,8 +286,9 @@ impl fmt::Display for Hash {
     }
 }
 
+// TODO vmx 2025-07-23: Check if making it `Copy` is really alright.
 /// A trait that defines the hashing functions that should be used for the inner and leaf nodes.
-pub trait Hasher {
+pub trait Hasher: Copy {
     /// The number of data bytes that should be hashed into the leaf nodes
     const CHUNK_SIZE: usize;
 
@@ -298,7 +299,7 @@ pub trait Hasher {
 }
 
 /// The hasher implementation for using BLAKE3.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Blake3Hasher;
 
 impl Hasher for Blake3Hasher {
@@ -361,11 +362,12 @@ fn blake3_parent_cv(left_child: &Hash, right_child: &Hash, is_root: bool) -> Has
 /// of a larger tree. In this case, the start_chunk is the chunk number of the first
 /// chunk in the tree, and the is_root flag can be false.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BaoTree {
+pub struct BaoTree<H> {
     /// Total number of bytes in the file
     size: u64,
     /// Log base 2 of the chunk group size
     block_size: BlockSize,
+    hasher: std::marker::PhantomData::<H>,
 }
 
 /// An offset of a node in a post-order outboard
@@ -390,10 +392,10 @@ impl PostOrderOffset {
 //const CHUNK_SIZE: usize = 10;
 const CHUNK_SIZE: u8 = 6;
 
-impl BaoTree {
+impl<H: Hasher> BaoTree<H> {
     /// Create a new self contained BaoTree
     pub fn new(size: u64, block_size: BlockSize) -> Self {
-        Self { size, block_size }
+        Self { size, block_size, hasher: std::marker::PhantomData::<H> }
     }
 
     /// The size of the blob from which this tree was constructed, in bytes
@@ -450,7 +452,7 @@ impl BaoTree {
     ///
     /// This iterator is used by both the sync and async io code for computing
     /// an outboard from existing data
-    pub fn post_order_chunks_iter(&self) -> PostOrderChunkIter {
+    pub fn post_order_chunks_iter(&self) -> PostOrderChunkIter<H> {
         PostOrderChunkIter::new(*self)
     }
 
@@ -463,7 +465,7 @@ impl BaoTree {
         &self,
         ranges: &'a RangeSetRef<ChunkNum>,
         min_level: u8,
-    ) -> PreOrderPartialChunkIterRef<'a> {
+    ) -> PreOrderPartialChunkIterRef<'a, H> {
         PreOrderPartialChunkIterRef::new(*self, ranges, min_level)
     }
 

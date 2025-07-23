@@ -11,14 +11,15 @@ use crate::{BaoTree, Blake3Hasher, BlockSize, Hash, Hasher, TreeNode};
 ///
 /// Also allows you to write and will immediately discard the data, a bit like /dev/null
 #[derive(Debug)]
-pub struct EmptyOutboard {
+pub struct EmptyOutboard<H> {
     /// tree defining the geometry
-    pub tree: BaoTree,
+    pub tree: BaoTree<H>,
     /// root hash
     pub root: Hash,
 }
 
 /// The hasher hasher isn't actually used, so the implementation doesn't matter.
+#[derive(Clone, Copy, Debug)]
 pub struct EmptyHasher;
 
 impl Hasher for EmptyHasher {
@@ -32,14 +33,14 @@ impl Hasher for EmptyHasher {
     }
 }
 
-impl crate::io::sync::Outboard for EmptyOutboard {
+impl crate::io::sync::Outboard for EmptyOutboard<EmptyHasher> {
     type Hasher = EmptyHasher;
 
     fn root(&self) -> Hash {
         self.root.clone()
     }
-    fn tree(&self) -> BaoTree {
-        self.tree
+    fn tree(&self) -> BaoTree<Self::Hasher> {
+        self.tree.clone()
     }
     fn load(&self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
         Ok(if self.tree.is_relevant_for_outboard(node) {
@@ -52,13 +53,13 @@ impl crate::io::sync::Outboard for EmptyOutboard {
 }
 
 #[cfg(feature = "tokio_fsm")]
-impl crate::io::fsm::Outboard for EmptyOutboard {
+impl crate::io::fsm::Outboard for EmptyOutboard<EmptyHasher> {
     type Hasher = EmptyHasher;
 
     fn root(&self) -> Hash {
         self.root.clone()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         self.tree
     }
     async fn load(&mut self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -71,7 +72,7 @@ impl crate::io::fsm::Outboard for EmptyOutboard {
     }
 }
 
-impl crate::io::sync::OutboardMut for EmptyOutboard {
+impl crate::io::sync::OutboardMut for EmptyOutboard<EmptyHasher> {
     type Hasher = EmptyHasher;
 
     fn save(&mut self, node: TreeNode, _pair: &(Hash, Hash)) -> io::Result<()> {
@@ -91,7 +92,7 @@ impl crate::io::sync::OutboardMut for EmptyOutboard {
 }
 
 #[cfg(feature = "tokio_fsm")]
-impl crate::io::fsm::OutboardMut for EmptyOutboard {
+impl crate::io::fsm::OutboardMut for EmptyOutboard<EmptyHasher> {
     type Hasher = EmptyHasher;
 
     async fn save(&mut self, node: TreeNode, _pair: &(Hash, Hash)) -> io::Result<()> {
@@ -123,11 +124,9 @@ pub struct PreOrderOutboard<D = Vec<u8>, H = Blake3Hasher> {
     /// root hash
     pub root: Hash,
     /// tree defining the data
-    pub tree: BaoTree,
+    pub tree: BaoTree<H>,
     /// hashes with length prefix
     pub data: D,
-    /// TODO vmx 2025-07-13: should be private.
-    pub hasher: std::marker::PhantomData<H>,
 }
 
 impl<R: Default> Default for PreOrderOutboard<R> {
@@ -136,7 +135,6 @@ impl<R: Default> Default for PreOrderOutboard<R> {
             root: Default::default(),
             tree: BaoTree::new(0, BlockSize::ZERO),
             data: Default::default(),
-            hasher: Default::default(),
         }
     }
 }
@@ -151,11 +149,9 @@ pub struct PostOrderOutboard<D = Vec<u8>, H = Blake3Hasher> {
     /// root hash
     pub root: Hash,
     /// tree defining the data
-    pub tree: BaoTree,
+    pub tree: BaoTree<H>,
     /// hashes with length prefix
     pub data: D,
-    /// TODO vmx 2025-07-13: should be private.
-    pub hasher: std::marker::PhantomData<H>,
 }
 
 impl<D: Default> Default for PostOrderOutboard<D> {
@@ -164,7 +160,6 @@ impl<D: Default> Default for PostOrderOutboard<D> {
             root: Default::default(),
             tree: BaoTree::new(0, BlockSize::ZERO),
             data: Default::default(),
-            hasher: Default::default(),
         }
     }
 }
@@ -183,11 +178,9 @@ pub struct PostOrderMemOutboard<T = Vec<u8>, H = Blake3Hasher> {
     /// root hash
     pub root: Hash,
     /// tree defining the data
-    pub tree: BaoTree,
+    pub tree: BaoTree<H>,
     /// hashes without length suffix
     pub data: T,
-    /// TODO vmx 2025-07-13: should be private.
-    pub hasher: std::marker::PhantomData<H>,
 }
 
 impl<T: Default> Default for PostOrderMemOutboard<T> {
@@ -196,7 +189,6 @@ impl<T: Default> Default for PostOrderMemOutboard<T> {
             root: Default::default(),
             tree: BaoTree::new(0, BlockSize::ZERO),
             data: Default::default(),
-            hasher: Default::default(),
         }
     }
 }
@@ -217,7 +209,6 @@ impl<H: Hasher> PostOrderMemOutboard<Vec<u8>, H> {
             root,
             tree,
             data: outboard,
-            hasher: std::marker::PhantomData::<H>,
         }
     }
 
@@ -240,7 +231,6 @@ impl<T, H: Hasher> PostOrderMemOutboard<T, H> {
             root: self.root,
             tree: self.tree,
             data: f(self.data),
-            hasher: self.hasher,
         }
     }
 
@@ -253,7 +243,6 @@ impl<T, H: Hasher> PostOrderMemOutboard<T, H> {
             root: self.root.clone(),
             tree: self.tree,
             data: vec![0; self.tree.outboard_size().try_into().unwrap()],
-            hasher: self.hasher,
         };
         crate::io::sync::copy(self, &mut target).unwrap();
         target
@@ -266,7 +255,7 @@ impl<T: AsRef<[u8]>, H: Hasher> crate::io::sync::Outboard for PostOrderMemOutboa
     fn root(&self) -> Hash {
         self.root.clone()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         self.tree
     }
     fn load(&self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -281,7 +270,7 @@ impl<T: AsRef<[u8]>, H: Hasher> crate::io::fsm::Outboard for PostOrderMemOutboar
     fn root(&self) -> Hash {
         self.root.clone()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<Self::Hasher> {
         self.tree
     }
     async fn load(&mut self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -338,14 +327,14 @@ impl<T: AsMut<[u8]>, H: Hasher> crate::io::fsm::OutboardMut for PostOrderMemOutb
     }
 }
 
-fn load_raw_post_mem(tree: &BaoTree, data: &[u8], node: TreeNode) -> Option<[u8; 64]> {
+fn load_raw_post_mem<H: Hasher>(tree: &BaoTree<H>, data: &[u8], node: TreeNode) -> Option<[u8; 64]> {
     let offset = tree.post_order_offset(node)?.value();
     let offset = usize::try_from(offset * 64).unwrap();
     let slice = &data[offset..offset + 64];
     Some(slice.try_into().unwrap())
 }
 
-fn load_post(tree: &BaoTree, data: &[u8], node: TreeNode) -> Option<(Hash, Hash)> {
+fn load_post<H: Hasher>(tree: &BaoTree<H>, data: &[u8], node: TreeNode) -> Option<(Hash, Hash)> {
     load_raw_post_mem(tree, data, node).map(parse_hash_pair)
 }
 
@@ -358,11 +347,9 @@ pub struct PreOrderMemOutboard<T = Vec<u8>, H = Blake3Hasher> {
     /// root hash
     pub root: Hash,
     /// tree defining the data
-    pub tree: BaoTree,
+    pub tree: BaoTree<H>,
     /// hashes with length prefix
     pub data: T,
-    /// TODO vmx 2025-07-13: should be private.
-    pub hasher: std::marker::PhantomData<H>,
 }
 
 impl<T: Default> Default for PreOrderMemOutboard<T> {
@@ -371,7 +358,6 @@ impl<T: Default> Default for PreOrderMemOutboard<T> {
             root: Default::default(),
             tree: BaoTree::new(0, BlockSize::ZERO),
             data: Default::default(),
-            hasher: Default::default(),
         }
     }
 }
@@ -398,7 +384,6 @@ impl<H: Hasher> PreOrderMemOutboard<Vec<u8>, H> {
             root: Hash::from([0; 32]),
             tree,
             data: outboard,
-            hasher: std::marker::PhantomData::<H>,
         };
         let root = crate::io::sync::outboard(data, tree, &mut res).unwrap();
         res.root = root;
@@ -417,7 +402,6 @@ impl<T, H: Hasher> PreOrderMemOutboard<T, H> {
             root: self.root,
             tree: self.tree,
             data: f(self.data),
-            hasher: self.hasher,
         }
     }
 
@@ -430,7 +414,6 @@ impl<T, H: Hasher> PreOrderMemOutboard<T, H> {
             root: self.root.clone(),
             tree: self.tree,
             data: vec![0; self.tree.outboard_size().try_into().unwrap()],
-            hasher: self.hasher,
         };
         crate::io::sync::copy(self, &mut target).unwrap();
         target
@@ -443,7 +426,7 @@ impl<T: AsRef<[u8]>, H: Hasher> crate::io::sync::Outboard for PreOrderMemOutboar
     fn root(&self) -> Hash {
         self.root.clone()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<H> {
         self.tree
     }
     fn load(&self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -483,7 +466,7 @@ impl<T: AsRef<[u8]>, H: Hasher> crate::io::fsm::Outboard for PreOrderMemOutboard
     fn root(&self) -> Hash {
         self.root.clone()
     }
-    fn tree(&self) -> BaoTree {
+    fn tree(&self) -> BaoTree<H> {
         self.tree
     }
     async fn load(&mut self, node: TreeNode) -> io::Result<Option<(Hash, Hash)>> {
@@ -517,7 +500,7 @@ impl<T: AsMut<[u8]>, H: Hasher> crate::io::fsm::OutboardMut for PreOrderMemOutbo
     }
 }
 
-fn load_raw_pre_mem(tree: &BaoTree, data: &[u8], node: TreeNode) -> Option<[u8; 64]> {
+fn load_raw_pre_mem<H: Hasher>(tree: &BaoTree<H>, data: &[u8], node: TreeNode) -> Option<[u8; 64]> {
     // this is a bit slow because pre_order_offset uses a loop.
     // pretty sure there is a way to write it as a single expression if you spend the time.
     // but profiling still has this in the nanosecond range, so this is unlikely to be a
@@ -528,7 +511,7 @@ fn load_raw_pre_mem(tree: &BaoTree, data: &[u8], node: TreeNode) -> Option<[u8; 
     Some(slice.try_into().unwrap())
 }
 
-fn load_pre(tree: &BaoTree, data: &[u8], node: TreeNode) -> Option<(Hash, Hash)> {
+fn load_pre<H: Hasher>(tree: &BaoTree<H>, data: &[u8], node: TreeNode) -> Option<(Hash, Hash)> {
     load_raw_pre_mem(tree, data, node).map(parse_hash_pair)
 }
 
