@@ -159,25 +159,25 @@ impl BlockSize {
     /// This means that blocks and blake3 chunks are the same size.
     pub const ZERO: BlockSize = BlockSize(0);
 
-    /// Number of bytes in a block at this level
-    pub const fn bytes(self) -> usize {
-        CHUNK_SIZE << self.0
-        //32 << self.0
-    }
+    ///// Number of bytes in a block at this level
+    //pub const fn bytes(self) -> usize {
+    //    CHUNK_SIZE << self.0
+    //    //32 << self.0
+    //}
 
     /// Compute a block size from bytes
-    pub const fn from_bytes(bytes: u64) -> Option<Self> {
-        if bytes.count_ones() != 1 {
-            // must be a power of 2
-            return None;
-        }
-        if bytes < CHUNK_SIZE as u64{
-            // must be at least 1024 bytes
-            return None;
-        }
-        //Some(Self((bytes.trailing_zeros() - 10) as u8))
-        Some(Self((bytes.trailing_zeros() - LOG2_CHUNK_SIZE as u32) as u8))
-    }
+    //pub const fn from_bytes(bytes: u64) -> Option<Self> {
+    //    if bytes.count_ones() != 1 {
+    //        // must be a power of 2
+    //        return None;
+    //    }
+    //    if bytes < CHUNK_SIZE as u64{
+    //        // must be at least 1024 bytes
+    //        return None;
+    //    }
+    //    //Some(Self((bytes.trailing_zeros() - 10) as u8))
+    //    Some(Self((bytes.trailing_zeros() - LOG2_CHUNK_SIZE as u32) as u8))
+    //}
 
     /// Convert to an u32 for comparison with levels
     pub(crate) const fn to_u32(self) -> u32 {

@@ -290,7 +290,7 @@ impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
     /// For decoding you need to know the root hash, block size, and the ranges that were requested.
     /// Additionally you need to provide a reader that can be used to read the encoded data.
     pub fn new(root: Hash, tree: BaoTree<H>, encoded: R, ranges: &'a ChunkRangesRef) -> Self {
-        let buf = BytesMut::with_capacity(tree.block_size().bytes());
+        let buf = BytesMut::with_capacity(tree.block_size_bytes());
         Self::new_with_buffer(root, tree, encoded, ranges, buf)
     }
 

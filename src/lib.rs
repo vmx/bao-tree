@@ -390,9 +390,10 @@ impl PostOrderOffset {
 }
 
 //const CHUNK_SIZE: usize = 10;
-const CHUNK_SIZE: u8 = 6;
+//const CHUNK_SIZE: u8 = 6;
 
 impl<H: Hasher> BaoTree<H> {
+//GO ON HERE and check if we can put the chunk size from the hasher into the block size
     /// Create a new self contained BaoTree
     pub fn new(size: u64, block_size: BlockSize) -> Self {
         Self { size, block_size, hasher: std::marker::PhantomData::<H> }
@@ -408,12 +409,21 @@ impl<H: Hasher> BaoTree<H> {
         self.block_size
     }
 
+    /// The block size of the tree
+    pub const fn block_size_bytes(&self) -> usize {
+        (Self::chunk_size_log() << self.block_size.0) as usize
+    }
+
+    const fn chunk_size_log() -> u8 {
+        H::CHUNK_SIZE.ilog2() as u8
+    }
+
     /// Given a tree of size `size` and block size `block_size`,
     /// compute the root node and the number of nodes for a shifted tree.
     pub(crate) fn shifted(&self) -> (TreeNode, TreeNode) {
         let level = self.block_size.0;
         let size = self.size;
-        let shift = CHUNK_SIZE + level;
+        let shift = Self::chunk_size_log() + level;
         let mask = (1 << shift) - 1;
         // number of full blocks of size 1024 << level
         let full_blocks = size >> shift;
