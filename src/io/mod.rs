@@ -132,18 +132,18 @@ impl BaoContentItem {
 /// Given a range set of byte ranges, round it up to full chunks.
 ///
 /// E.g. a byte range from 1..3 will be converted into the chunk range 0..1 (0..1024 bytes).
-pub fn round_up_to_chunks(ranges: &RangeSetRef<u64>) -> ChunkRanges {
+pub fn round_up_to_chunks(ranges: &RangeSetRef<u64>, chunk_size: usize) -> ChunkRanges {
     let mut res = ChunkRanges::empty();
     // we don't know if the ranges are overlapping, so we just compute the union
     for item in ranges.iter() {
         // full_chunks() rounds down, chunks() rounds up
         match item {
             RangeSetRange::RangeFrom(range) => {
-                res |= ChunkRanges::from(ChunkNum::full_chunks(*range.start)..)
+                res |= ChunkRanges::from(ChunkNum::full_chunks(*range.start, chunk_size)..)
             }
             RangeSetRange::Range(range) => {
                 res |= ChunkRanges::from(
-                    ChunkNum::full_chunks(*range.start)..ChunkNum::chunks(*range.end),
+                    ChunkNum::full_chunks(*range.start, chunk_size)..ChunkNum::chunks(*range.end),
                 )
             }
         }

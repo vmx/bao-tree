@@ -212,8 +212,8 @@ impl ChunkNum {
     /// Number of chunks that are fully filled that this number of bytes covers
     ///
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is still 1 chunk
-    pub const fn full_chunks(size: u64) -> ChunkNum {
-        ChunkNum(size >> LOG2_CHUNK_SIZE)
+    pub const fn full_chunks(size: u64, chunk_size: usize) -> ChunkNum {
+        ChunkNum(size >> chunk_size.ilog2())
     }
 
     /// number of bytes that this number of chunks covers

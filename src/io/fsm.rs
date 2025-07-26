@@ -826,12 +826,12 @@ mod validate {
             let data = self.data.read_exact_at(range.start, len).await?;
             // is_root is always false because the case of a single chunk group is handled before calling this function
             let actual =
-                O::Hasher::hash_chunk(ChunkNum::full_chunks(range.start).0, &data, is_root);
+                O::Hasher::hash_chunk(ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE).0, &data, is_root);
             if &actual == hash {
                 // yield the left range
                 self.co
                     .yield_(Ok(
-                        ChunkNum::full_chunks(range.start)..ChunkNum::chunks(range.end)
+                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end)
                     ))
                     .await;
             }
@@ -946,7 +946,7 @@ mod validate {
             Box::pin(async move {
                 let yield_node_range = |range: Range<u64>| {
                     self.co.yield_(Ok(
-                        ChunkNum::full_chunks(range.start)..ChunkNum::chunks(range.end)
+                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end)
                     ))
                 };
                 if ranges.is_empty() {
