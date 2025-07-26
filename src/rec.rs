@@ -23,24 +23,24 @@ use crate::{split_inner, ChunkNum, ChunkRangesRef, Hash, Hasher};
 /// 0..6, 7..10 will become 0.. (the entire blob). the last chunk will be included and the hole filled
 /// 3..6, 7..10 will become 3.. the last chunk will be included and the hole filled
 /// 0..5, 7..10 will become 0..5, 7.. (the last chunk will be included, but chunkk 5 will not be sent)
-pub fn truncate_ranges(ranges: &ChunkRangesRef, size: u64) -> &ChunkRangesRef {
+pub fn truncate_ranges(ranges: &ChunkRangesRef, size: u64, chunk_size: usize) -> &ChunkRangesRef {
     let bs = ranges.boundaries();
-    ChunkRangesRef::new_unchecked(&bs[..truncated_len(ranges, size)])
+    ChunkRangesRef::new_unchecked(&bs[..truncated_len(ranges, size, chunk_size)])
 }
 
 /// A version of [canonicalize_ranges] that takes and returns an owned [ChunkRanges].
 ///
 /// This is needed for the state machines that own their ranges.
 #[cfg(feature = "tokio_fsm")]
-pub fn truncate_ranges_owned(ranges: crate::ChunkRanges, size: u64) -> crate::ChunkRanges {
-    let n = truncated_len(&ranges, size);
+pub fn truncate_ranges_owned(ranges: crate::ChunkRanges, size: u64, chunk_size: usize) -> crate::ChunkRanges {
+    let n = truncated_len(&ranges, size, chunk_size);
     let mut boundaries = ranges.into_inner();
     boundaries.truncate(n);
     crate::ChunkRanges::new_unchecked(boundaries)
 }
 
-fn truncated_len(ranges: &ChunkRangesRef, size: u64) -> usize {
-    let end = ChunkNum::chunks(size);
+fn truncated_len(ranges: &ChunkRangesRef, size: u64, chunk_size: usize) -> usize {
+    let end = ChunkNum::chunks(size, chunk_size);
     let lc = ChunkNum(end.0.saturating_sub(1));
     let bs = ranges.boundaries();
     match bs.binary_search(&lc) {

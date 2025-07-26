@@ -202,10 +202,10 @@ impl ChunkNum {
     /// Number of chunks that this number of bytes covers
     ///
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is 2 chunks
-    pub const fn chunks(size: u64) -> ChunkNum {
-        let mask = (CHUNK_SIZE as u64) - 1;
+    pub const fn chunks(size: u64, chunk_size: usize) -> ChunkNum {
+        let mask = (chunk_size as u64) - 1;
         let part = ((size & mask) != 0) as u64;
-        let whole = size >> LOG2_CHUNK_SIZE;
+        let whole = size >> chunk_size.ilog2();
         ChunkNum(whole + part)
     }
 

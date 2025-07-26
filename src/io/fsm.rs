@@ -324,7 +324,7 @@ struct ResponseDecoderInner<R, H: 'static> {
 impl<R, H: Hasher> ResponseDecoderInner<R, H> {
     fn new(tree: BaoTree<H>, hash: Hash, ranges: ChunkRanges, encoded: R) -> Self {
         // now that we know the size, we can canonicalize the ranges
-        let ranges = truncate_ranges_owned(ranges, tree.size());
+        let ranges = truncate_ranges_owned(ranges, tree.size(), H::CHUNK_SIZE);
         let mut res = Self {
             iter: ResponseIter::new(tree, ranges),
             stack: SmallVec::new(),
@@ -526,7 +526,7 @@ where
     stack.push(outboard.root());
     let mut encoded = encoded;
     let tree = outboard.tree();
-    let ranges = truncate_ranges(ranges, tree.size());
+    let ranges = truncate_ranges(ranges, tree.size(), O::Hasher::CHUNK_SIZE);
     for item in tree.ranges_pre_order_chunks_iter_ref(ranges, 0) {
         match item {
             BaoChunk::Parent {
@@ -801,7 +801,7 @@ mod validate {
                 }
                 return Ok(());
             }
-            let ranges = truncate_ranges(ranges, tree.size());
+            let ranges = truncate_ranges(ranges, tree.size(), O::Hasher::CHUNK_SIZE);
             let root_hash = outboard.root();
             let (shifted_root, shifted_filled_size) = tree.shifted();
             let mut validator = RecursiveDataValidator {
@@ -831,7 +831,7 @@ mod validate {
                 // yield the left range
                 self.co
                     .yield_(Ok(
-                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end)
+                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end, O::Hasher::CHUNK_SIZE)
                     ))
                     .await;
             }
@@ -922,7 +922,7 @@ mod validate {
                 co.yield_(Ok(ChunkNum(0)..tree.chunks())).await;
                 return Ok(());
             }
-            let ranges = truncate_ranges(ranges, tree.size());
+            let ranges = truncate_ranges(ranges, tree.size(), O::Hasher::CHUNK_SIZE);
             let root_hash = outboard.root();
             let (shifted_root, shifted_filled_size) = tree.shifted();
             let mut validator = RecursiveOutboardValidator {
@@ -946,7 +946,7 @@ mod validate {
             Box::pin(async move {
                 let yield_node_range = |range: Range<u64>| {
                     self.co.yield_(Ok(
-                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end)
+                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end, O::Hasher::CHUNK_SIZE)
                     ))
                 };
                 if ranges.is_empty() {

@@ -536,7 +536,7 @@ impl<H: Hasher> BaoTree<H> {
 
     /// Number of chunks in the tree
     pub fn chunks(&self) -> ChunkNum {
-        ChunkNum::chunks(self.size)
+        ChunkNum::chunks(self.size, H::CHUNK_SIZE)
     }
 
     /// Number of hash pairs in the outboard
