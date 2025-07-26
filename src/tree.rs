@@ -116,12 +116,6 @@ impl ChunkNum {
     }
 }
 
-//pub(crate) const BLAKE3_CHUNK_SIZE: usize = 1024;
-//pub(crate) const BLAKE3_LOG2_CHUNK_SIZE: usize = 10;
-const LOG2_CHUNK_SIZE: usize = 6;
-const CHUNK_SIZE: usize = 1 << LOG2_CHUNK_SIZE;
-//pub(crate) const CHUNK_SIZE: u32 = 1 << LOG2_CHUNK_SIZE;
-
 /// A block size.
 ///
 /// Block sizes are powers of 2, with the smallest being 1024 bytes.
