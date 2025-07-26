@@ -440,8 +440,8 @@ impl<H: Hasher> BaoTree<H> {
     }
 
     fn byte_range(&self, node: TreeNode) -> Range<u64> {
-        let start = node.chunk_range().start.to_bytes();
-        let end = node.chunk_range().end.to_bytes();
+        let start = node.chunk_range().start.to_bytes(H::CHUNK_SIZE);
+        let end = node.chunk_range().end.to_bytes(H::CHUNK_SIZE);
         start..end.min(self.size)
     }
 
@@ -450,8 +450,8 @@ impl<H: Hasher> BaoTree<H> {
     /// Returns two ranges, the first is the left range, the second is the right range
     /// If the leaf is partially contained in the tree, the right range will be empty
     fn leaf_byte_ranges3(&self, leaf: TreeNode) -> (u64, u64, u64) {
-        let Range { start, end } = leaf.byte_range();
-        let mid = leaf.mid().to_bytes();
+        let Range { start, end } = leaf.byte_range(H::CHUNK_SIZE);
+        let mid = leaf.mid().to_bytes(H::CHUNK_SIZE);
         if !(start < self.size || (start == 0 && self.size == 0)) {
             debug_assert!(start < self.size || (start == 0 && self.size == 0));
         }
@@ -574,7 +574,7 @@ impl<H: Hasher> BaoTree<H> {
     #[inline]
     #[cfg(test)]
     const fn is_persisted(&self, node: TreeNode) -> bool {
-        !self.is_leaf(node) || node.mid().to_bytes() < self.size
+        !self.is_leaf(node) || node.mid().to_bytes(H::CHUNK_SIZE) < self.size
     }
 
     /// true if this is a node that is relevant for the outboard
@@ -588,7 +588,7 @@ impl<H: Hasher> BaoTree<H> {
             // a parent node, always relevant
             true
         } else {
-            node.mid().to_bytes() < self.size
+            node.mid().to_bytes(H::CHUNK_SIZE) < self.size
         }
     }
 
@@ -596,7 +596,7 @@ impl<H: Hasher> BaoTree<H> {
     pub fn pre_order_offset(&self, node: TreeNode) -> Option<u64> {
         // if the node has a level less than block_size, this will return None
         let shifted = node.add_block_size(self.block_size.0)?;
-        let is_half_leaf = shifted.is_leaf() && node.mid().to_bytes() >= self.size;
+        let is_half_leaf = shifted.is_leaf() && node.mid().to_bytes(H::CHUNK_SIZE) >= self.size;
         if !is_half_leaf {
             let (_, tree_filled_size) = self.shifted();
             Some(pre_order_offset_loop(shifted.0, tree_filled_size.0))
@@ -609,12 +609,12 @@ impl<H: Hasher> BaoTree<H> {
     pub fn post_order_offset(&self, node: TreeNode) -> Option<PostOrderOffset> {
         // if the node has a level less than block_size, this will return None
         let shifted = node.add_block_size(self.block_size.0)?;
-        if node.byte_range().end <= self.size {
+        if node.byte_range(H::CHUNK_SIZE).end <= self.size {
             // stable node, use post_order_offset
             Some(PostOrderOffset::Stable(shifted.post_order_offset()))
         } else {
             // unstable node
-            if shifted.is_leaf() && node.mid().to_bytes() >= self.size {
+            if shifted.is_leaf() && node.mid().to_bytes(H::CHUNK_SIZE) >= self.size {
                 // half full leaf node, not considered
                 None
             } else {
@@ -631,7 +631,7 @@ impl<H: Hasher> BaoTree<H> {
     }
 
     fn chunk_group_bytes(&self) -> usize {
-        self.chunk_group_chunks().to_bytes().try_into().unwrap()
+        self.chunk_group_chunks().to_bytes(H::CHUNK_SIZE).try_into().unwrap()
     }
 }
 
@@ -759,9 +759,9 @@ impl TreeNode {
     /// Note that this will give the untruncated range, which may be larger than
     /// the actual tree. To get the exact byte range for a tree, use
     /// [BaoTree::byte_range];
-    fn byte_range(&self) -> Range<u64> {
+    fn byte_range(&self, chunk_size: usize) -> Range<u64> {
         let range = self.chunk_range();
-        range.start.to_bytes()..range.end.to_bytes()
+        range.start.to_bytes(chunk_size)..range.end.to_bytes(chunk_size)
     }
 
     /// Number of nodes below this node, excluding this node.

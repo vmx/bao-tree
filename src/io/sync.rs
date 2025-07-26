@@ -371,11 +371,11 @@ impl<'a, R: Read, H: Hasher> DecodeResponseIter<'a, R, H> {
                 let actual = H::hash_chunk(start_chunk.0, &self.buf, is_root);
                 let leaf_hash = self.stack.pop().unwrap();
                 if leaf_hash != actual {
-                    return Err(DecodeError::LeafHashMismatch(start_chunk));
+                    return Err(DecodeError::LeafHashMismatch(start_chunk.to_bytes(H::CHUNK_SIZE)));
                 }
                 Ok(Some(
                     Leaf {
-                        offset: start_chunk.to_bytes(),
+                        offset: start_chunk.to_bytes(H::CHUNK_SIZE),
                         data: self.buf.split().freeze(),
                     }
                     .into(),
@@ -421,7 +421,7 @@ pub fn encode_ranges<D: ReadAt + Size, O: Outboard, W: Write>(
             BaoChunk::Leaf {
                 start_chunk, size, ..
             } => {
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(O::Hasher::CHUNK_SIZE);
                 let buf = &mut buffer[..size];
                 data.read_exact_at(start, buf)?;
                 encoded.write_all(buf)?;
@@ -488,7 +488,7 @@ pub fn encode_ranges_validated<D: ReadAt, O: Outboard, W: Write>(
                 ..
             } => {
                 let expected = stack.pop().unwrap();
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(O::Hasher::CHUNK_SIZE);
                 let buf = &mut buffer[..size];
                 data.read_exact_at(start, buf)?;
                 let (actual, to_write) = if !ranges.is_all() {
@@ -513,7 +513,7 @@ pub fn encode_ranges_validated<D: ReadAt, O: Outboard, W: Write>(
                     (actual, &buf[..])
                 };
                 if actual != expected {
-                    return Err(EncodeError::LeafHashMismatch(start_chunk));
+                    return Err(EncodeError::LeafHashMismatch(start_chunk.to_bytes(O::Hasher::CHUNK_SIZE)));
                 }
                 encoded.write_all(to_write)?;
             }

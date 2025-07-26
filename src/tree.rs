@@ -217,7 +217,7 @@ impl ChunkNum {
     }
 
     /// number of bytes that this number of chunks covers
-    pub const fn to_bytes(&self) -> u64 {
-        self.0 << LOG2_CHUNK_SIZE
+    pub const fn to_bytes(&self, chunk_size: usize) -> u64 {
+        self.0 << chunk_size.ilog2()
     }
 }

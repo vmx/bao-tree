@@ -444,10 +444,10 @@ impl<R: AsyncStreamReader, H: Hasher + 'static> ResponseDecoder<R, H> {
                 let leaf_hash = this.stack.pop().unwrap();
                 let actual = H::hash_chunk(start_chunk.0, &data, is_root);
                 if leaf_hash != actual {
-                    return Err(DecodeError::LeafHashMismatch(start_chunk));
+                    return Err(DecodeError::LeafHashMismatch(start_chunk.to_bytes(H::CHUNK_SIZE)));
                 }
                 Leaf {
-                    offset: start_chunk.to_bytes(),
+                    offset: start_chunk.to_bytes(H::CHUNK_SIZE),
                     data,
                 }
                 .into()
@@ -489,12 +489,12 @@ where
             BaoChunk::Leaf {
                 start_chunk, size, ..
             } => {
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(O::Hasher::CHUNK_SIZE);
                 let bytes = data.read_exact_at(start, size).await?;
                 encoded
                     .write_bytes(bytes)
                     .await
-                    .map_err(|e| EncodeError::maybe_leaf_write(e, start_chunk))?;
+                    .map_err(|e| EncodeError::maybe_leaf_write(e, start_chunk.to_bytes(O::Hasher::CHUNK_SIZE)))?;
             }
         }
     }
@@ -562,7 +562,7 @@ where
                 ..
             } => {
                 let expected = stack.pop().unwrap();
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(O::Hasher::CHUNK_SIZE);
                 let bytes = data.read_exact_at(start, size).await?;
                 let (actual, to_write) = if !ranges.is_all() {
                     // we need to encode just a part of the data
@@ -585,12 +585,12 @@ where
                     (actual, bytes)
                 };
                 if actual != expected {
-                    return Err(EncodeError::LeafHashMismatch(start_chunk));
+                    return Err(EncodeError::LeafHashMismatch(start_chunk.to_bytes(O::Hasher::CHUNK_SIZE)));
                 }
                 encoded
                     .write_bytes(to_write)
                     .await
-                    .map_err(|e| EncodeError::maybe_leaf_write(e, start_chunk))?;
+                    .map_err(|e| EncodeError::maybe_leaf_write(e, start_chunk.to_bytes(O::Hasher::CHUNK_SIZE)))?;
             }
         }
     }

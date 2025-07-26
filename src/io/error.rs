@@ -15,7 +15,7 @@ pub enum DecodeError {
     /// The hash of a parent did not match the expected hash
     ParentHashMismatch(TreeNode),
     /// The hash of a leaf did not match the expected hash
-    LeafHashMismatch(ChunkNum),
+    LeafHashMismatch(u64),
     /// There was an error reading from the underlying io
     Io(io::Error),
 }
@@ -53,9 +53,9 @@ impl From<DecodeError> for io::Error {
                     node.mid().0
                 ),
             ),
-            DecodeError::LeafHashMismatch(chunk) => io::Error::new(
+            DecodeError::LeafHashMismatch(bytes) => io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("leaf hash mismatch (offset {})", chunk.to_bytes()),
+                format!("leaf hash mismatch (offset {})", bytes),
             ),
             DecodeError::LeafNotFound(_) => io::Error::new(io::ErrorKind::UnexpectedEof, e),
             DecodeError::ParentNotFound(_) => io::Error::new(io::ErrorKind::UnexpectedEof, e),
@@ -92,11 +92,11 @@ pub enum EncodeError {
     /// The hash of a parent did not match the expected hash
     ParentHashMismatch(TreeNode),
     /// The hash of a leaf did not match the expected hash
-    LeafHashMismatch(ChunkNum),
+    LeafHashMismatch(u64),
     /// We got a ConnectionReset while writing a parent hash pair, indicating that the remote end stopped listening
     ParentWrite(TreeNode),
     /// We got a ConnectionReset while writing a chunk, indicating that the remote end stopped listening
-    LeafWrite(ChunkNum),
+    LeafWrite(u64),
     /// File size does not match size in outboard
     SizeMismatch,
     /// There was an error reading from the underlying io
@@ -131,9 +131,9 @@ impl From<EncodeError> for io::Error {
                     node.mid().0
                 ),
             ),
-            EncodeError::LeafHashMismatch(chunk) => io::Error::new(
+            EncodeError::LeafHashMismatch(bytes) => io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("leaf hash mismatch at {}", chunk.to_bytes()),
+                format!("leaf hash mismatch at {}", bytes),
             ),
             EncodeError::ParentWrite(node) => io::Error::new(
                 io::ErrorKind::ConnectionReset,
@@ -143,9 +143,9 @@ impl From<EncodeError> for io::Error {
                     node.mid().0
                 ),
             ),
-            EncodeError::LeafWrite(chunk) => io::Error::new(
+            EncodeError::LeafWrite(bytes) => io::Error::new(
                 io::ErrorKind::ConnectionReset,
-                format!("leaf write failed at {}", chunk.to_bytes()),
+                format!("leaf write failed at {}", bytes),
             ),
             EncodeError::SizeMismatch => {
                 io::Error::new(io::ErrorKind::InvalidData, "size mismatch")
@@ -171,9 +171,9 @@ impl EncodeError {
     }
 
     #[cfg(feature = "tokio_fsm")]
-    pub(crate) fn maybe_leaf_write(e: io::Error, chunk: ChunkNum) -> Self {
+    pub(crate) fn maybe_leaf_write(e: io::Error, bytes: u64) -> Self {
         if e.kind() == io::ErrorKind::ConnectionReset {
-            Self::LeafWrite(chunk)
+            Self::LeafWrite(bytes)
         } else {
             Self::Io(e)
         }

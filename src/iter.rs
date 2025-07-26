@@ -600,7 +600,7 @@ impl<'a, H: Hasher> Iterator for PreOrderPartialChunkIterRef<'a, H> {
             // There is a special case for the last leaf, if its right range is not within the
             // tree. In this case we don't need to split it, and can just emit it as is.
             let mid_chunk = node.mid();
-            let mid = mid_chunk.to_bytes();
+            let mid = mid_chunk.to_bytes(H::CHUNK_SIZE);
             if mid >= tree.size {
                 // this is the last leaf node, and only it's left part is in the range
                 // we can just emit it without splitting
