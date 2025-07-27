@@ -247,7 +247,10 @@ fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
     let bs = BlockSize::from_chunk_log(args.block_size);
     if args.block_size != 0 {
-        println!("Using block size: {}", Blake3Hasher::CHUNK_SIZE.ilog2() << args.block_size);
+        println!(
+            "Using block size: {}",
+            Blake3Hasher::CHUNK_SIZE.ilog2() << args.block_size
+        );
     }
     match args.command {
         Command::Outboard { path, out } => {
