@@ -336,9 +336,11 @@ impl<T> BaoChunk<T> {
                 let prefix = " ".repeat(n);
                 let start_chunk = node.chunk_range().start;
                 format!(
-                    "{}{},{},{}",
+                    //"{}{},{},{}",
+                    "{},{},{}",
                     prefix,
-                    start_chunk.to_bytes(),
+                    // TODO vmx 2025-07-27: make the bytes print somehow.
+                    //start_chunk.to_bytes(),
                     node.level(),
                     is_root
                 )
@@ -350,7 +352,9 @@ impl<T> BaoChunk<T> {
                 ..
             } => {
                 let prefix = " ".repeat(max_level);
-                format!("{}{},{},{}", prefix, start_chunk.to_bytes(), size, is_root)
+                // TODO vmx 2025-07-27: make the bytes print somehow.
+                //format!("{}{},{},{}", prefix, start_chunk.to_bytes(), size, is_root)
+                format!("{},{},{}", prefix, size, is_root)
             }
         }
     }

@@ -301,8 +301,8 @@ mod test_support {
     /// Reference implementation of the response iterator, using just the simple recursive
     /// implementation [select_nodes_rec].
     #[cfg(feature = "tokio_fsm")]
-    pub(crate) fn partial_chunk_iter_reference(
-        tree: BaoTree,
+    pub(crate) fn partial_chunk_iter_reference<H: Hasher>(
+        tree: BaoTree<H>,
         ranges: &ChunkRangesRef,
         min_full_level: u8,
         chunk_size: usize,
@@ -324,8 +324,8 @@ mod test_support {
     /// Reference implementation of the response iterator, using just the simple recursive
     /// implementation [select_nodes_rec].
     #[cfg(feature = "tokio_fsm")]
-    pub(crate) fn response_iter_reference(
-        tree: BaoTree,
+    pub(crate) fn response_iter_reference<H: Hasher>(
+        tree: BaoTree<H>,
         ranges: &ChunkRangesRef,
         chunk_size: usize,
     ) -> Vec<BaoChunk> {
@@ -349,16 +349,16 @@ mod test_support {
     /// This is not a proper iterator since it computes all elements at once, but it is useful for
     /// testing.
     #[derive(Debug)]
-    pub struct ReferencePreOrderPartialChunkIterRef<'a> {
+    pub struct ReferencePreOrderPartialChunkIterRef<'a, H: Hasher> {
         iter: std::vec::IntoIter<BaoChunk<&'a ChunkRangesRef>>,
-        tree: BaoTree,
+        tree: BaoTree<H>,
     }
 
-    impl<'a> ReferencePreOrderPartialChunkIterRef<'a> {
+    impl<'a, H: Hasher> ReferencePreOrderPartialChunkIterRef<'a, H> {
         /// Create a new iterator over the tree.
         #[cfg(feature = "tokio_fsm")]
         pub fn new(
-            tree: BaoTree,
+            tree: BaoTree<H>,
             ranges: &'a ChunkRangesRef,
             min_full_level: u8,
             chunk_size: usize,
@@ -370,12 +370,12 @@ mod test_support {
 
         /// Return a reference to the underlying tree.
         #[allow(dead_code)]
-        pub fn tree(&self) -> &BaoTree {
+        pub fn tree(&self) -> &BaoTree<H> {
             &self.tree
         }
     }
 
-    impl<'a> Iterator for ReferencePreOrderPartialChunkIterRef<'a> {
+    impl<'a, H: Hasher> Iterator for ReferencePreOrderPartialChunkIterRef<'a, H> {
         type Item = BaoChunk<&'a ChunkRangesRef>;
 
         fn next(&mut self) -> Option<Self::Item> {
@@ -413,7 +413,7 @@ mod test_support {
     }
 
     #[cfg(feature = "tokio_fsm")]
-    pub fn get_leaf_ranges<R>(
+    pub fn get_leaf_ranges<R, H: Hasher>(
         iter: impl IntoIterator<Item = BaoChunk<R>>,
     ) -> impl Iterator<Item = Range<u64>> {
         iter.into_iter().filter_map(|e| {
@@ -421,7 +421,7 @@ mod test_support {
                 start_chunk, size, ..
             } = e
             {
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(H::CHUNK_SIZE);
                 let end = start + (size as u64);
                 Some(start..end)
             } else {
@@ -438,7 +438,7 @@ mod test_support {
         let mut res = Vec::new();
         let size = data.len() as u64;
         // canonicalize the ranges
-        let ranges = truncate_ranges(ranges, size);
+        let ranges = truncate_ranges(ranges, size, H::CHUNK_SIZE);
         let hash = encode_selected_rec::<H>(
             ChunkNum(0),
             data,
@@ -486,7 +486,7 @@ mod tests {
         rec::{
             bao_encode_reference, bao_outboard_reference, encode_ranges_reference, make_test_data,
         },
-        Blake3Hasher, BlockSize, ChunkNum, ChunkRanges,
+        Blake3Hasher, BlockSize, ChunkNum, ChunkRanges, Hasher,
     };
 
     fn size_and_slice() -> impl Strategy<Value = (usize, Range<usize>)> {
@@ -545,8 +545,8 @@ mod tests {
         );
         let mut expected_encoded = Vec::new();
         encoder.read_to_end(&mut expected_encoded).unwrap();
-        let chunk_start = ChunkNum::full_chunks(start as u64);
-        let chunk_end = ChunkNum::chunks(end as u64).max(chunk_start + 1);
+        let chunk_start = ChunkNum::full_chunks(start as u64, Blake3Hasher::CHUNK_SIZE);
+        let chunk_end = ChunkNum::chunks(end as u64, Blake3Hasher::CHUNK_SIZE).max(chunk_start + 1);
         let ranges = ChunkRanges::from(chunk_start..chunk_end);
         let mut actual_encoded =
             encode_ranges_reference::<Blake3Hasher>(&data, &ranges, BlockSize::ZERO).0;
@@ -562,8 +562,8 @@ mod tests {
         let (size, start) = size_and_start;
         let end = start + 1;
         let data = make_test_data(size);
-        let chunk_start = ChunkNum::full_chunks(start as u64);
-        let chunk_end = ChunkNum::chunks(end as u64).max(chunk_start + 1);
+        let chunk_start = ChunkNum::full_chunks(start as u64, Blake3Hasher::CHUNK_SIZE);
+        let chunk_end = ChunkNum::chunks(end as u64, Blake3Hasher::CHUNK_SIZE).max(chunk_start + 1);
         let ranges = ChunkRanges::from(chunk_start..chunk_end);
         let (mut encoded, hash) =
             encode_ranges_reference::<Blake3Hasher>(&data, &ranges, BlockSize::ZERO);

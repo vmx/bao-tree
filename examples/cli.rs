@@ -24,7 +24,7 @@ use std::{
 use anyhow::Context;
 use bao_tree::{
     io::{outboard::PreOrderMemOutboard, round_up_to_chunks, Leaf, Parent},
-    Blake3Hasher, BlockSize, ChunkNum, ChunkRanges, Hash,
+    Blake3Hasher, BlockSize, ChunkNum, ChunkRanges, Hash, Hasher,
 };
 use bytes::Bytes;
 use clap::{Parser, Subcommand};
@@ -187,7 +187,7 @@ mod sync {
             sync::{encode_ranges_validated, DecodeResponseIter, Outboard},
             BaoContentItem, Leaf, Parent,
         },
-        BaoTree, Blake3Hasher, BlockSize, ChunkRanges,
+        BaoTree, Blake3Hasher, BlockSize, ChunkRanges, Hasher,
     };
     use positioned_io::WriteAt;
 
@@ -302,7 +302,7 @@ mod sync {
             Command::Encode(EncodeArgs { file, ranges, out }) => {
                 let ranges = parse_ranges(ranges)?;
                 log!(v, "byte ranges: {:?}", ranges);
-                let ranges = round_up_to_chunks(&ranges);
+                let ranges = round_up_to_chunks(&ranges, Blake3Hasher::CHUNK_SIZE);
                 log!(v, "chunk ranges: {:?}", ranges);
                 log!(v, "reading file");
                 let data = std::fs::read(file)?;
@@ -473,7 +473,7 @@ mod fsm {
             Command::Encode(EncodeArgs { file, ranges, out }) => {
                 let ranges = parse_ranges(ranges)?;
                 log!(v, "byte ranges: {:?}", ranges);
-                let ranges = round_up_to_chunks(&ranges);
+                let ranges = round_up_to_chunks(&ranges, Blake3Hasher::CHUNK_SIZE);
                 log!(v, "chunk ranges: {:?}", ranges);
                 log!(v, "reading file");
                 let data = Bytes::from(std::fs::read(file)?);

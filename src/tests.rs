@@ -59,15 +59,14 @@ fn post_order_outboard_bao(data: &[u8]) -> PostOrderMemOutboard {
         root: hash,
         tree,
         data: outboard,
-        hasher: std::marker::PhantomData::<Blake3Hasher>,
     };
     pre.flip()
 }
 
-fn encode_slice_bao(data: &[u8], chunk_range: Range<ChunkNum>) -> (Vec<u8>, Hash) {
+fn encode_slice_bao<H: Hasher>(data: &[u8], chunk_range: Range<ChunkNum>) -> (Vec<u8>, Hash) {
     let (outboard, hash) = bao::encode::outboard(data);
-    let slice_start = chunk_range.start.to_bytes();
-    let slice_len = (chunk_range.end - chunk_range.start).to_bytes();
+    let slice_start = chunk_range.start.to_bytes(H::CHUNK_SIZE);
+    let slice_len = (chunk_range.end - chunk_range.start).to_bytes(H::CHUNK_SIZE);
     let mut encoder = bao::encode::SliceExtractor::new_outboard(
         Cursor::new(&data),
         Cursor::new(&outboard),
@@ -81,12 +80,12 @@ fn encode_slice_bao(data: &[u8], chunk_range: Range<ChunkNum>) -> (Vec<u8>, Hash
     (res, hash)
 }
 
-fn bao_tree_encode_slice_comparison_impl(data: Vec<u8>, mut range: Range<ChunkNum>) {
+fn bao_tree_encode_slice_comparison_impl<H: Hasher>(data: Vec<u8>, mut range: Range<ChunkNum>) {
     // extend empty range to contain at least 1 byte
     if range.start == range.end {
         range.end.0 += 1;
     };
-    let expected = encode_slice_bao(&data, range.clone()).0;
+    let expected = encode_slice_bao::<H>(&data, range.clone()).0;
 
     let ob = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, BlockSize::ZERO);
     let ranges = ChunkRanges::from(range);
@@ -94,7 +93,7 @@ fn bao_tree_encode_slice_comparison_impl(data: Vec<u8>, mut range: Range<ChunkNu
     assert_eq!(expected.len(), actual.len());
     assert_eq!(expected, actual);
 
-    let content_range = ChunkRanges::from(..ChunkNum::chunks(data.len() as u64));
+    let content_range = ChunkRanges::from(..ChunkNum::chunks(data.len() as u64, H::CHUNK_SIZE));
     if !content_range.is_superset(&ranges) {
         // the behaviour of bao/abao and us is different in this case.
         // if the query ranges are non empty outside the content range, we will return
@@ -115,10 +114,10 @@ fn bao_tree_encode_slice_comparison_impl(data: Vec<u8>, mut range: Range<ChunkNu
 }
 
 /// range is a range of chunks. Just using u64 for convenience in tests
-fn bao_tree_decode_slice_iter_impl(data: Vec<u8>, range: Range<u64>) {
-    let tree = BaoTree::new(data.len() as u64, BlockSize::ZERO);
+fn bao_tree_decode_slice_iter_impl<H: Hasher>(data: Vec<u8>, range: Range<u64>) {
+    let tree = BaoTree::<H>::new(data.len() as u64, BlockSize::ZERO);
     let range = ChunkNum(range.start)..ChunkNum(range.end);
-    let (encoded, root) = encode_slice_bao(&data, range.clone());
+    let (encoded, root) = encode_slice_bao::<H>(&data, range.clone());
     let expected = data;
     let ranges = ChunkRanges::from(range);
     let mut ec = Cursor::new(encoded);
@@ -136,10 +135,10 @@ mod fsm_tests {
     use crate::{io::fsm::*, rec::make_test_data, Blake3Hasher};
 
     /// range is a range of chunks. Just using u64 for convenience in tests
-    async fn bao_tree_decode_slice_fsm_impl(data: Vec<u8>, range: Range<u64>) {
+    async fn bao_tree_decode_slice_fsm_impl<H: Hasher>(data: Vec<u8>, range: Range<u64>) {
         let tree = BaoTree::new(data.len() as u64, BlockSize::ZERO);
         let range = ChunkNum(range.start)..ChunkNum(range.end);
-        let (encoded, root) = encode_slice_bao(&data, range.clone());
+        let (encoded, root) = encode_slice_bao::<H>(&data, range.clone());
         let expected = data;
         let ranges = ChunkRanges::from(range);
         let encoded = Cursor::new(encoded.as_slice());
@@ -156,17 +155,17 @@ mod fsm_tests {
     #[tokio::test]
     async fn bao_tree_decode_slice_fsm_0() {
         use make_test_data as td;
-        bao_tree_decode_slice_fsm_impl(td(0), 0..1).await;
-        bao_tree_decode_slice_fsm_impl(td(1), 0..1).await;
-        bao_tree_decode_slice_fsm_impl(td(1023), 0..1).await;
-        bao_tree_decode_slice_fsm_impl(td(1024), 0..1).await;
-        bao_tree_decode_slice_fsm_impl(td(1025), 0..2).await;
-        bao_tree_decode_slice_fsm_impl(td(2047), 0..2).await;
-        bao_tree_decode_slice_fsm_impl(td(2048), 0..2).await;
-        bao_tree_decode_slice_fsm_impl(td(24 * 1024 + 1), 0..25).await;
-        bao_tree_decode_slice_fsm_impl(td(1025), 0..1).await;
-        bao_tree_decode_slice_fsm_impl(td(1025), 1..2).await;
-        bao_tree_decode_slice_fsm_impl(td(1024 * 17), 0..18).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(0), 0..1).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1), 0..1).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1023), 0..1).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1024), 0..1).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1025), 0..2).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(2047), 0..2).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(2048), 0..2).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(24 * 1024 + 1), 0..25).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1025), 0..1).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1025), 1..2).await;
+        bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(td(1024 * 17), 0..18).await;
     }
 
     proptest! {
@@ -174,7 +173,7 @@ mod fsm_tests {
         fn bao_tree_decode_slice_all_stream(len in 0..32768usize) {
             let data = make_test_data(len);
             let chunk_range = 0..(data.len() / 1024 + 1) as u64;
-            tokio::runtime::Runtime::new().unwrap().block_on(bao_tree_decode_slice_fsm_impl(data, chunk_range));
+            tokio::runtime::Runtime::new().unwrap().block_on(bao_tree_decode_slice_fsm_impl::<Blake3Hasher>(data, chunk_range));
         }
     }
 }
@@ -215,7 +214,7 @@ fn bao_tree_outboard_levels() {
         assert_eq!(expected.as_bytes(), hash.as_bytes());
         assert_eq!(
             outboard.len() as u64,
-            BaoTree::new(td.len() as u64, block_size).outboard_size() + 8
+            BaoTree::<Blake3Hasher>::new(td.len() as u64, block_size).outboard_size() + 8
         );
     }
 }
@@ -237,7 +236,7 @@ fn bao_tree_slice_roundtrip_test(data: Vec<u8>, mut range: Range<ChunkNum>, bloc
     let expected = data.clone();
     let mut all_ranges: range_collections::RangeSet<[u64; 2]> = RangeSet2::empty();
     let mut ec = Cursor::new(encoded);
-    let tree = BaoTree::new(data.len() as u64, block_size);
+    let tree = BaoTree::<Blake3Hasher>::new(data.len() as u64, block_size);
     for item in decode_ranges_into_chunks(root, tree, &mut ec, &ChunkRanges::from(range)).unwrap() {
         let (pos, slice) = item.unwrap();
         // compute all data ranges
@@ -301,7 +300,7 @@ fn bao_tree_encode_slice_0() {
         (20000, 1..2),
     ];
     for (count, range) in cases {
-        bao_tree_encode_slice_comparison_impl(
+        bao_tree_encode_slice_comparison_impl::<Blake3Hasher>(
             td(count),
             ChunkNum(range.start)..ChunkNum(range.end),
         );
@@ -311,17 +310,17 @@ fn bao_tree_encode_slice_0() {
 #[test]
 fn bao_tree_decode_slice_0() {
     use make_test_data as td;
-    bao_tree_decode_slice_iter_impl(td(0), 0..1);
-    bao_tree_decode_slice_iter_impl(td(1), 0..1);
-    bao_tree_decode_slice_iter_impl(td(1023), 0..1);
-    bao_tree_decode_slice_iter_impl(td(1024), 0..1);
-    bao_tree_decode_slice_iter_impl(td(1025), 0..2);
-    bao_tree_decode_slice_iter_impl(td(2047), 0..2);
-    bao_tree_decode_slice_iter_impl(td(2048), 0..2);
-    bao_tree_decode_slice_iter_impl(td(24 * 1024 + 1), 0..25);
-    bao_tree_decode_slice_iter_impl(td(1025), 0..1);
-    bao_tree_decode_slice_iter_impl(td(1025), 1..2);
-    bao_tree_decode_slice_iter_impl(td(1024 * 17), 0..18);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(0), 0..1);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1), 0..1);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1023), 0..1);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1024), 0..1);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1025), 0..2);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(2047), 0..2);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(2048), 0..2);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(24 * 1024 + 1), 0..25);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1025), 0..1);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1025), 1..2);
+    bao_tree_decode_slice_iter_impl::<Blake3Hasher>(td(1024 * 17), 0..18);
 }
 
 #[test]
@@ -359,7 +358,7 @@ fn outboard_wrong_hash() {
 
 // create the mapping from a node number to the offset in the pre order traversal,
 // using brute force lookup in the bao output
-fn create_permutation_reference(size: usize) -> Vec<(TreeNode, usize)> {
+fn create_permutation_reference<H: Hasher>(size: usize) -> Vec<(TreeNode, usize)> {
     use make_test_data as td;
     let data = td(size);
     let po = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, BlockSize::ZERO);
@@ -371,7 +370,7 @@ fn create_permutation_reference(size: usize) -> Vec<(TreeNode, usize)> {
         .enumerate()
         .map(|(i, h)| (h, i))
         .collect::<HashMap<_, _>>();
-    let tree = BaoTree::new(size as u64, BlockSize::ZERO);
+    let tree = BaoTree::<H>::new(size as u64, BlockSize::ZERO);
     let mut res = Vec::new();
     for c in 0..tree.filled_size().0 {
         let node = TreeNode(c);
@@ -417,9 +416,9 @@ fn count_parents(node: u64, len: u64) -> u64 {
     parent_count
 }
 
-fn compare_pre_order_outboard(size: usize) {
-    let tree = BaoTree::new(size as u64, BlockSize::ZERO);
-    let perm = create_permutation_reference(size);
+fn compare_pre_order_outboard<H: Hasher>(size: usize) {
+    let tree = BaoTree::<H>::new(size as u64, BlockSize::ZERO);
+    let perm = create_permutation_reference::<H>(size);
 
     // print!("{:08b}", perm.len());
     for (k, v) in perm {
@@ -453,10 +452,10 @@ fn compare_pre_order_outboard(size: usize) {
     println!();
 }
 
-fn pre_order_outboard_line(case: usize) {
+fn pre_order_outboard_line<H: Hasher>(case: usize) {
     let size = case as u64;
-    let tree = BaoTree::new(size, BlockSize::ZERO);
-    let perm = create_permutation_reference(case);
+    let tree = BaoTree::<H>::new(size, BlockSize::ZERO);
+    let perm = create_permutation_reference::<H>(case);
     print!("{:08b}", perm.len());
     for (k, _v) in perm {
         // repr of node number where trailing zeros indicate level
@@ -488,22 +487,22 @@ fn pre_order_outboard_line(case: usize) {
 fn test_pre_order_outboard_fast() {
     let cases = [1024 * 78];
     for case in cases {
-        compare_pre_order_outboard(case);
+        compare_pre_order_outboard::<Blake3Hasher>(case);
     }
 
     for case in 0..256 {
-        pre_order_outboard_line(case * 1024);
+        pre_order_outboard_line::<Blake3Hasher>(case * 1024);
     }
 }
 
 /// Decode encoded ranges given the root hash
-pub fn decode_ranges_into_chunks<'a>(
+pub fn decode_ranges_into_chunks<'a, H: Hasher + 'a>(
     root: Hash,
-    tree: BaoTree,
+    tree: BaoTree<H>,
     encoded: impl Read + 'a,
     ranges: &'a ChunkRangesRef,
 ) -> std::io::Result<impl Iterator<Item = std::io::Result<(u64, Vec<u8>)>> + 'a> {
-    let iter = DecodeResponseIter::<_, Blake3Hasher>::new(root, tree, encoded, ranges);
+    let iter = DecodeResponseIter::new(root, tree, encoded, ranges);
     Ok(iter.filter_map(|item| match item {
         Ok(item) => {
             if let BaoContentItem::Leaf(Leaf { offset, data }) = item {
@@ -520,13 +519,13 @@ pub fn decode_ranges_into_chunks<'a>(
 /// that are required to validate the given ranges
 ///
 /// Recursive reference implementation, just used in tests
-fn iterate_part_preorder_reference<'a>(
-    tree: &BaoTree,
+fn iterate_part_preorder_reference<'a, H: Hasher>(
+    tree: &BaoTree<H>,
     ranges: &'a ChunkRangesRef,
     max_skip_level: u8,
 ) -> Vec<NodeInfo<'a>> {
-    fn iterate_part_rec<'a>(
-        tree: &BaoTree,
+    fn iterate_part_rec<'a, H: Hasher>(
+        tree: &BaoTree<H>,
         node: TreeNode,
         ranges: &'a ChunkRangesRef,
         max_skip_level: u32,
@@ -579,9 +578,9 @@ fn iterate_part_preorder_reference<'a>(
     res
 }
 
-fn size_and_slice_overlapping() -> impl Strategy<Value = (u64, ChunkNum, ChunkNum)> {
-    (0..32768u64).prop_flat_map(|len| {
-        let chunks = ChunkNum::chunks(len);
+fn size_and_slice_overlapping(chunk_size: usize) -> impl Strategy<Value = (u64, ChunkNum, ChunkNum)> {
+    (0..32768u64).prop_flat_map(move |len| {
+        let chunks = ChunkNum::chunks(len, chunk_size);
         let slice_start = 0..=chunks.0.saturating_sub(1);
         let slice_len = 1..=(chunks.0 + 1);
         (
@@ -592,9 +591,9 @@ fn size_and_slice_overlapping() -> impl Strategy<Value = (u64, ChunkNum, ChunkNu
     })
 }
 
-fn size_and_slice() -> impl Strategy<Value = (u64, ChunkNum, ChunkNum)> {
-    (0..32768u64).prop_flat_map(|len| {
-        let chunks = ChunkNum::chunks(len);
+fn size_and_slice(chunk_size: usize) -> impl Strategy<Value = (u64, ChunkNum, ChunkNum)> {
+    (0..32768u64).prop_flat_map(move |len| {
+        let chunks = ChunkNum::chunks(len, chunk_size);
         let slice_start = 0..=chunks.0;
         let slice_len = 0..=chunks.0;
         (
@@ -605,18 +604,18 @@ fn size_and_slice() -> impl Strategy<Value = (u64, ChunkNum, ChunkNum)> {
     })
 }
 
-fn get_leaf_ranges(
-    tree: BaoTree,
-    ranges: &ChunkRangesRef,
+fn get_leaf_ranges<'a, H: Hasher + 'a>(
+    tree: BaoTree<H>,
+    ranges: &'a ChunkRangesRef,
     max_skip_level: u8,
-) -> impl Iterator<Item = Range<u64>> + '_ {
+) -> impl Iterator<Item = Range<u64>> + 'a {
     tree.ranges_pre_order_chunks_iter_ref(ranges, max_skip_level)
         .filter_map(|e| {
             if let BaoChunk::Leaf {
                 start_chunk, size, ..
             } = e
             {
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(H::CHUNK_SIZE);
                 let end = start + (size as u64);
                 Some(start..end)
             } else {
@@ -628,8 +627,8 @@ fn get_leaf_ranges(
 /// Create a random selection
 /// `size` is the size of the data
 /// `n` is the number of ranges, roughly the complexity of the selection
-fn selection(size: u64, n: usize) -> impl Strategy<Value = ChunkRanges> {
-    let chunks = BaoTree::new(size, BlockSize(0)).chunks();
+fn selection<H: Hasher>(size: u64, n: usize) -> impl Strategy<Value = ChunkRanges> {
+    let chunks = BaoTree::<H>::new(size, BlockSize(0)).chunks();
     proptest::collection::vec((..chunks.0, ..chunks.0), n).prop_map(|e| {
         let mut res = ChunkRanges::empty();
         for (a, b) in e {
@@ -644,11 +643,11 @@ fn selection(size: u64, n: usize) -> impl Strategy<Value = ChunkRanges> {
     })
 }
 
-fn size_and_selection(
+fn size_and_selection<H: Hasher>(
     size_range: Range<usize>,
     n: usize,
 ) -> impl Strategy<Value = (usize, ChunkRanges)> {
-    size_range.prop_flat_map(move |size| (Just(size), selection(size as u64, n)))
+    size_range.prop_flat_map(move |size| (Just(size), selection::<H>(size as u64, n)))
 }
 
 #[test]
@@ -673,15 +672,15 @@ fn encode_selected_rec_cases() {
 }
 
 /// Reference implementation of encode_ranges_validated that uses the simple recursive impl
-fn encode_selected_reference(
+fn encode_selected_reference<H: Hasher>(
     data: &[u8],
     block_size: BlockSize,
     ranges: &ChunkRangesRef,
 ) -> (Hash, Vec<u8>) {
     let mut res = Vec::new();
     let max_skip_level = block_size.to_u32();
-    let ranges = truncate_ranges(ranges, data.len() as u64);
-    let hash = encode_selected_rec::<Blake3Hasher>(
+    let ranges = truncate_ranges(ranges, data.len() as u64, H::CHUNK_SIZE);
+    let hash = encode_selected_rec::<H>(
         ChunkNum(0),
         data,
         true,
@@ -733,14 +732,14 @@ fn last_chunk(size: u64) -> Range<u64> {
     }
 }
 
-fn select_last_chunk_impl(size: u64, block_size: u8) -> (Vec<Range<u64>>, Vec<Range<u64>>) {
+fn select_last_chunk_impl<H: Hasher>(size: u64, block_size: u8) -> (Vec<Range<u64>>, Vec<Range<u64>>) {
     let range = ChunkRanges::from(ChunkNum(u64::MAX)..);
-    let selection = ResponseIterRef::new(BaoTree::new(size, BlockSize(block_size)), &range)
+    let selection = ResponseIterRef::new(BaoTree::<H>::new(size, BlockSize(block_size)), &range)
         .filter_map(|item| match item {
             BaoChunk::Leaf {
                 start_chunk, size, ..
             } => {
-                let start = start_chunk.to_bytes();
+                let start = start_chunk.to_bytes(H::CHUNK_SIZE);
                 let end = start + (size as u64);
                 Some(start..end)
             }
@@ -750,7 +749,7 @@ fn select_last_chunk_impl(size: u64, block_size: u8) -> (Vec<Range<u64>>, Vec<Ra
     (selection, vec![last_chunk(size)])
 }
 
-fn encode_last_chunk_impl(size: u64, block_size: u8) -> (Vec<u8>, Vec<u8>) {
+fn encode_last_chunk_impl<H: Hasher>(size: u64, block_size: u8) -> (Vec<u8>, Vec<u8>) {
     let data = make_test_data(size as usize);
     let outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, BlockSize(block_size));
 
@@ -759,8 +758,8 @@ fn encode_last_chunk_impl(size: u64, block_size: u8) -> (Vec<u8>, Vec<u8>) {
     encode_ranges_validated(&data, &outboard, &range, &mut encoded1).unwrap();
 
     let lc = last_chunk(size);
-    let sc = ChunkNum::chunks(lc.start);
-    let ec = ChunkNum::chunks(lc.end);
+    let sc = ChunkNum::chunks(lc.start, H::CHUNK_SIZE);
+    let ec = ChunkNum::chunks(lc.end, H::CHUNK_SIZE);
     let range = ChunkRanges::from(sc..ec);
     let mut encoded2 = Vec::new();
     encode_ranges_validated(&data, &outboard, &range, &mut encoded2).unwrap();
@@ -779,7 +778,7 @@ fn outboard_hash() {
 
 #[test]
 fn select_last_chunk_0() {
-    assert_tuple_eq!(select_last_chunk_impl(1, 0));
+    assert_tuple_eq!(select_last_chunk_impl::<Blake3Hasher>(1, 0));
 }
 
 /// Compares the PostOrderNodeIter with a simple stack-based reference implementation.
@@ -789,7 +788,7 @@ fn test_post_order_node_iter() {
     let cases = [8193];
     for size in cases {
         for i in 0..5 {
-            let tree = BaoTree::new(size, BlockSize(i));
+            let tree = BaoTree::<Blake3Hasher>::new(size, BlockSize(i));
             let items = tree.post_order_nodes_iter().collect::<Vec<_>>();
             println!("{}", i);
             for item in items {
@@ -809,21 +808,21 @@ fn test_pre_order_chunks_iter_ref() {
     ];
     for (size, ranges) in cases {
         for i in 0..5 {
-            let tree = BaoTree::new(size, BlockSize(i));
+            let tree = BaoTree::<Blake3Hasher>::new(size, BlockSize(i));
             let items = PreOrderPartialIterRef::new(tree, &ranges, tree.block_size.0);
             println!("{}", i);
             for item in items {
-                println!("{:?} {:?}", item.node.byte_range(), item);
+                println!("{:?} {:?}", item.node.byte_range(Blake3Hasher::CHUNK_SIZE), item);
             }
             println!();
         }
         for i in 0..5 {
-            let tree = BaoTree::new(size, BlockSize(i));
+            let tree = BaoTree::<Blake3Hasher>::new(size, BlockSize(i));
             let items = ReferencePreOrderPartialChunkIterRef::new(
                 tree,
                 &ranges,
                 tree.block_size.0,
-                <Blake3Hasher as Hasher>::CHUNK_SIZE,
+                Blake3Hasher::CHUNK_SIZE,
             );
             println!("{}", i);
             for item in items {
@@ -839,7 +838,7 @@ fn test_pre_order_chunks_iter_ref() {
 #[ignore]
 fn test_post_order_chunk_iter() {
     for i in 1..5 {
-        let tree = BaoTree::new(1, BlockSize(i));
+        let tree = BaoTree::<Blake3Hasher>::new(1, BlockSize(i));
         let items = PostOrderChunkIter::new(tree).collect::<Vec<_>>();
         println!("{}", i);
         for item in items {
@@ -862,8 +861,8 @@ fn test_post_order_outboard() {
 
 type Pair<A> = (A, A);
 
-fn pre_order_iter_comparison_impl(len: u64, level: u8) -> Pair<Vec<TreeNode>> {
-    let tree = BaoTree::new(len, BlockSize(level));
+fn pre_order_iter_comparison_impl<H: Hasher>(len: u64, level: u8) -> Pair<Vec<TreeNode>> {
+    let tree = BaoTree::<H>::new(len, BlockSize(level));
     let iter1 = tree.pre_order_nodes_iter().collect::<Vec<_>>();
     let iter2 = tree
         .ranges_pre_order_nodes_iter(&ChunkRanges::all(), 0)
@@ -876,7 +875,7 @@ fn pre_order_iter_comparison_impl(len: u64, level: u8) -> Pair<Vec<TreeNode>> {
 fn pre_order_iter_comparison_cases() {
     let cases = [(2049, 1)];
     for (len, level) in cases {
-        assert_tuple_eq!(pre_order_iter_comparison_impl(len, level));
+        assert_tuple_eq!(pre_order_iter_comparison_impl::<Blake3Hasher>(len, level));
     }
 }
 
@@ -890,7 +889,7 @@ fn encode_last_chunk_cases() {
         // (8192, 0),
     ];
     for (size, block_size) in cases {
-        assert_tuple_eq!(encode_last_chunk_impl(size, block_size));
+        assert_tuple_eq!(encode_last_chunk_impl::<Blake3Hasher>(size, block_size));
     }
 }
 
@@ -922,7 +921,7 @@ fn test_full_chunk_groups() {
 
 #[test]
 fn sub_chunk_group_query() {
-    let tree = BaoTree::new(1024 * 32, BlockSize(4));
+    let tree = BaoTree::<Blake3Hasher>::new(1024 * 32, BlockSize(4));
     let ranges = ChunkRanges::from(ChunkNum(16)..ChunkNum(24));
     let items = ResponseIter::new(tree, ranges)
         .filter(|x| matches!(x, BaoChunk::Leaf { .. }))
@@ -943,24 +942,24 @@ proptest! {
     /// Check that a query outside the valid range always selects the last chunk
     #[test]
     fn select_last_chunk(size in 1..100000u64, block_size in 0..4u8) {
-        assert_tuple_eq!(select_last_chunk_impl(size, block_size));
+        assert_tuple_eq!(select_last_chunk_impl::<Blake3Hasher>(size, block_size));
     }
 
     /// Check that a query outside the valid range always encodes the last chunk
     #[test]
     fn encode_last_chunk(size in 1..100000u64, block_size in 0..4u8) {
-        assert_tuple_eq!(encode_last_chunk_impl(size, block_size));
+        assert_tuple_eq!(encode_last_chunk_impl::<Blake3Hasher>(size, block_size));
     }
 
     /// Checks that the simple recursive impl bao_encode_selected_recursive that
     /// does not need an outboard is the same as the more complex encode_ranges_validated
     /// that requires an outboard.
     #[test]
-    fn encode_selected_reference_sync_proptest((size, ranges) in size_and_selection(1..100000, 2), block_size in 0..5u8) {
+    fn encode_selected_reference_sync_proptest((size, ranges) in size_and_selection::<Blake3Hasher>(1..100000, 2), block_size in 0..5u8) {
         let data = make_test_data(size);
         let expected_hash = blake3_hash(&data);
         let block_size = BlockSize(block_size);
-        let (actual_hash, actual_encoded) = encode_selected_reference(&data, block_size, &ranges);
+        let (actual_hash, actual_encoded) = encode_selected_reference::<Blake3Hasher>(&data, block_size, &ranges);
         let mut expected_encoded = Vec::new();
         let outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, block_size);
         crate::io::sync::encode_ranges_validated(
@@ -977,11 +976,11 @@ proptest! {
     /// does not need an outboard is the same as the more complex encode_ranges_validated
     /// that requires an outboard.
     #[test]
-    fn encode_selected_reference_fsm_proptest((size, ranges) in size_and_selection(1..100000, 2), block_size in 0..4u8) {
+    fn encode_selected_reference_fsm_proptest((size, ranges) in size_and_selection::<Blake3Hasher>(1..100000, 2), block_size in 0..4u8) {
         let data = make_test_data(size);
         let expected_hash = blake3_hash(&data);
         let block_size = BlockSize(block_size);
-        let (actual_hash, actual_encoded) = encode_selected_reference(&data, block_size, &ranges);
+        let (actual_hash, actual_encoded) = encode_selected_reference::<Blake3Hasher>(&data, block_size, &ranges);
         let mut expected_encoded = Vec::new();
         let outboard = PostOrderMemOutboard::<_, Blake3Hasher>::create(&data, block_size);
         let data: Bytes = data.into();
@@ -999,7 +998,7 @@ proptest! {
     /// cover the entire data exactly once.
     #[test]
     fn max_skip_level(size in 0..32786u64, block_size in 0..2u8, max_skip_level in 0..2u8) {
-        let tree = BaoTree::new(size, BlockSize(block_size));
+        let tree = BaoTree::<Blake3Hasher>::new(size, BlockSize(block_size));
         let ranges = ChunkRanges::all();
         let leaf_ranges = get_leaf_ranges(tree, &ranges, max_skip_level).collect::<Vec<_>>();
         prop_assert_eq!(range_union(leaf_ranges), Some(RangeSet2::from(0..size)));
@@ -1018,7 +1017,7 @@ proptest! {
     /// restricted pre-order iterator for the entire tree.
     #[test]
     fn pre_order_iter_comparison(len in 0..1000000u64, level in 0u8..4) {
-        prop_assert_tuple_eq!(pre_order_iter_comparison_impl(len, level));
+        prop_assert_tuple_eq!(pre_order_iter_comparison_impl::<Blake3Hasher>(len, level));
     }
 
     #[test]
@@ -1030,28 +1029,28 @@ proptest! {
     fn bao_tree_encode_slice_all(len in 0..32768usize) {
         let data = make_test_data(len);
         let chunk_range = ChunkNum(0)..ChunkNum((data.len() / 1024 + 1) as u64);
-        bao_tree_encode_slice_comparison_impl(data, chunk_range);
+        bao_tree_encode_slice_comparison_impl::<Blake3Hasher>(data, chunk_range);
     }
 
     #[test]
     fn bao_tree_decode_slice_all(len in 0..32768usize) {
         let data = make_test_data(len);
         let chunk_range = 0..(data.len() / 1024 + 1) as u64;
-        bao_tree_decode_slice_iter_impl(data, chunk_range);
+        bao_tree_decode_slice_iter_impl::<Blake3Hasher>(data, chunk_range);
     }
 
     #[test]
-    fn bao_tree_encode_slice_part_overlapping((len, start, size) in size_and_slice_overlapping()) {
+    fn bao_tree_encode_slice_part_overlapping((len, start, size) in size_and_slice_overlapping(Blake3Hasher::CHUNK_SIZE)) {
         let data = make_test_data(len as usize);
         let chunk_range = start .. start + size;
-        bao_tree_encode_slice_comparison_impl(data, chunk_range);
+        bao_tree_encode_slice_comparison_impl::<Blake3Hasher>(data, chunk_range);
     }
 
     #[test]
-    fn bao_tree_encode_slice_part_any((len, start, size) in size_and_slice()) {
+    fn bao_tree_encode_slice_part_any((len, start, size) in size_and_slice(Blake3Hasher::CHUNK_SIZE)) {
         let data = make_test_data(len.try_into().unwrap());
         let chunk_range = start .. start + size;
-        bao_tree_encode_slice_comparison_impl(data, chunk_range);
+        bao_tree_encode_slice_comparison_impl::<Blake3Hasher>(data, chunk_range);
     }
 
     #[test]
@@ -1060,7 +1059,7 @@ proptest! {
     }
 
     #[test]
-    fn bao_tree_slice_roundtrip((len, start, size) in size_and_slice_overlapping(), level in 0u8..6) {
+    fn bao_tree_slice_roundtrip((len, start, size) in size_and_slice_overlapping(Blake3Hasher::CHUNK_SIZE), level in 0u8..6) {
         let level = BlockSize(level);
         let data = make_test_data(len as usize);
         let chunk_range = start .. start + size;
@@ -1069,8 +1068,8 @@ proptest! {
 
     /// Compares the ranges iter with a recursive reference implementation.
     #[test]
-    fn partial_iterator_reference_comparison((len, start, size) in size_and_slice_overlapping()) {
-        let tree = BaoTree::new(len, BlockSize::ZERO);
+    fn partial_iterator_reference_comparison((len, start, size) in size_and_slice_overlapping(Blake3Hasher::CHUNK_SIZE)) {
+        let tree = BaoTree::<Blake3Hasher>::new(len, BlockSize::ZERO);
         let chunk_range = start .. start + size;
         let rs = ChunkRanges::from(chunk_range);
         let iter1 = iterate_part_preorder_reference(&tree, &rs, 0);
@@ -1081,6 +1080,6 @@ proptest! {
     #[test]
     #[ignore]
     fn pre_post_outboard(n in 0usize..1000000) {
-        compare_pre_order_outboard(n);
+        compare_pre_order_outboard::<Blake3Hasher>(n);
     }
 }

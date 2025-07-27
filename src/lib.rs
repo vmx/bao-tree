@@ -82,7 +82,7 @@
 //!         round_up_to_chunks,
 //!         sync::{decode_ranges, encode_ranges_validated, valid_ranges, CreateOutboard},
 //!     },
-//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
+//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges, Hasher,
 //! };
 //!
 //! /// Use a block size of 16 KiB, a good default for most cases
@@ -95,7 +95,7 @@
 //! let ob = PreOrderOutboard::<Vec<u8>>::create(&file, BLOCK_SIZE)?;
 //! // Encode the first 100000 bytes of the file
 //! let ranges = ByteRanges::from(0..100000);
-//! let ranges = round_up_to_chunks(&ranges);
+//! let ranges = round_up_to_chunks(&ranges, Blake3Hasher::CHUNK_SIZE);
 //! // Stream of data to client. Needs to implement `io::Write`. We just use a vec here.
 //! let mut to_client = vec![];
 //! encode_ranges_validated(&file, &ob, &ranges, &mut to_client)?;
@@ -111,7 +111,6 @@
 //!     tree,
 //!     root,
 //!     data: vec![],
-//!     hasher: std::marker::PhantomData::<Blake3Hasher>,
 //! };
 //! decode_ranges(from_server, &ranges, &mut decoded, &mut ob)?;
 //!
@@ -145,7 +144,7 @@
 //!         outboard::PreOrderOutboard,
 //!         round_up_to_chunks,
 //!     },
-//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
+//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges, Hasher,
 //! };
 //! use bytes::BytesMut;
 //! use futures_lite::StreamExt;
@@ -161,7 +160,7 @@
 //! let mut ob = PreOrderOutboard::<BytesMut>::create(&mut file, BLOCK_SIZE).await?;
 //! // Encode the first 100000 bytes of the file
 //! let ranges = ByteRanges::from(0..100000);
-//! let ranges = round_up_to_chunks(&ranges);
+//! let ranges = round_up_to_chunks(&ranges, Blake3Hasher::CHUNK_SIZE);
 //! // Stream of data to client. Needs to implement `io::Write`. We just use a vec here.
 //! let mut to_client = Vec::new();
 //! encode_ranges_validated(file, &mut ob, &ranges, &mut to_client).await?;
@@ -177,7 +176,6 @@
 //!     tree,
 //!     root,
 //!     data: BytesMut::new(),
-//!     hasher: std::marker::PhantomData::<Blake3Hasher>,
 //! };
 //! decode_ranges(from_server, ranges, &mut decoded, &mut ob).await?;
 //!
@@ -288,7 +286,7 @@ impl fmt::Display for Hash {
 
 // TODO vmx 2025-07-23: Check if making it `Copy` is really alright.
 /// A trait that defines the hashing functions that should be used for the inner and leaf nodes.
-pub trait Hasher: Copy {
+pub trait Hasher: Copy + Debug {
     /// The number of data bytes that should be hashed into the leaf nodes
     const CHUNK_SIZE: usize;
 
@@ -508,7 +506,7 @@ impl<H: Hasher> BaoTree<H> {
         &self,
         ranges: &'a RangeSetRef<ChunkNum>,
         min_level: u8,
-    ) -> PreOrderPartialIterRef<'a> {
+    ) -> PreOrderPartialIterRef<'a, H> {
         PreOrderPartialIterRef::new(*self, ranges, min_level)
     }
 

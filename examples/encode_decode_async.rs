@@ -6,7 +6,7 @@ use bao_tree::{
         outboard::PreOrderOutboard,
         round_up_to_chunks,
     },
-    Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
+    Blake3Hasher, BlockSize, ByteRanges, ChunkRanges, Hasher
 };
 use bytes::BytesMut;
 use futures_lite::StreamExt;
@@ -22,7 +22,7 @@ async fn main() -> io::Result<()> {
     let mut ob = PreOrderOutboard::<BytesMut>::create(&mut file, BLOCK_SIZE).await?;
     // Encode the first 100000 bytes of the file
     let ranges = ByteRanges::from(0..100000);
-    let ranges = round_up_to_chunks(&ranges);
+    let ranges = round_up_to_chunks(&ranges, Blake3Hasher::CHUNK_SIZE);
     // Stream of data to client. Needs to implement `io::Write`. We just use a vec here.
     let mut to_client = Vec::new();
     encode_ranges_validated(file, &mut ob, &ranges, &mut to_client).await?;
@@ -38,7 +38,6 @@ async fn main() -> io::Result<()> {
         tree,
         root,
         data: BytesMut::new(),
-        hasher: std::marker::PhantomData::<Blake3Hasher>,
     };
     decode_ranges(from_server, ranges, &mut decoded, &mut ob).await?;
 
