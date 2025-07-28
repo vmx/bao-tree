@@ -758,7 +758,7 @@ mod validate {
                 // yield the left range
                 self.co
                     .yield_(Ok(
-                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end, O::Hasher::CHUNK_SIZE)
+                        ChunkNum::chunk_range(range, O::Hasher::CHUNK_SIZE)
                     ))
                     .await;
             }
@@ -872,7 +872,7 @@ mod validate {
             Box::pin(async move {
                 let yield_node_range = |range: Range<u64>| {
                     self.co.yield_(Ok(
-                        ChunkNum::full_chunks(range.start, O::Hasher::CHUNK_SIZE)..ChunkNum::chunks(range.end, O::Hasher::CHUNK_SIZE)
+                        ChunkNum::chunk_range(range, O::Hasher::CHUNK_SIZE)
                     ))
                 };
                 if ranges.is_empty() {

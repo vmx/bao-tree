@@ -143,7 +143,7 @@ pub fn round_up_to_chunks(ranges: &RangeSetRef<u64>, chunk_size: usize) -> Chunk
             }
             RangeSetRange::Range(range) => {
                 res |= ChunkRanges::from(
-                    ChunkNum::full_chunks(*range.start, chunk_size)..ChunkNum::chunks(*range.end, chunk_size),
+                    ChunkNum::chunk_range(*range.start..*range.end, chunk_size)
                 )
             }
         }

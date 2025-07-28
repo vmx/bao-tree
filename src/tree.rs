@@ -3,7 +3,7 @@
 //! Most operations are concerned with node indexes in an in order traversal of a binary tree.
 use std::{
     fmt,
-    ops::{Add, Div, Mul, Sub},
+    ops::{Add, Div, Mul, Sub, Range},
 };
 
 use range_collections::range_set::RangeSetEntry;
@@ -208,6 +208,11 @@ impl ChunkNum {
     /// E.g. 1024 bytes is 1 chunk, 1025 bytes is still 1 chunk
     pub const fn full_chunks(size: u64, chunk_size: usize) -> ChunkNum {
         ChunkNum(size >> chunk_size.ilog2())
+    }
+
+    /// A range of bytes converted to a range of chunks
+    pub const fn chunk_range(range: Range<u64>, chunk_size: usize) -> Range<ChunkNum> {
+        ChunkNum::full_chunks(range.start, chunk_size)..ChunkNum::chunks(range.end, chunk_size)
     }
 
     /// number of bytes that this number of chunks covers
