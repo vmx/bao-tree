@@ -127,6 +127,7 @@ name = "bao-tree"
 version = "0.16.0"
 dependencies = [
  "anyhow",
+ "arrayvec",
  "bao",
  "blake3",
  "bytes",

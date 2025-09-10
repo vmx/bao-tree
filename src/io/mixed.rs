@@ -1,15 +1,14 @@
 //! Read from sync, send to tokio sender
 use std::{future::Future, result};
 
-use blake3;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use super::{sync::Outboard, EncodeError, Leaf, Parent};
 use crate::{
-    hash_subtree, iter::BaoChunk, parent_cv, rec::truncate_ranges, split_inner, ChunkNum,
-    ChunkRangesRef, TreeNode,
+    iter::BaoChunk, rec::truncate_ranges, split_inner, ChunkNum, ChunkRangesRef, Hash, Hasher,
+    TreeNode,
 };
 
 /// A content item for the bao streaming protocol.
@@ -73,7 +72,7 @@ impl Sender for tokio::sync::mpsc::Sender<EncodedItem> {
 /// It is possible to encode ranges from a partial file and outboard.
 /// This will either succeed if the requested ranges are all present, or fail
 /// as soon as a range is missing.
-pub async fn traverse_ranges_validated<D, O, F>(
+pub async fn traverse_ranges_validated<D, O, F, H>(
     data: D,
     outboard: O,
     ranges: &ChunkRangesRef,
@@ -83,9 +82,11 @@ where
     D: ReadBytesAt,
     O: Outboard,
     F: Sender,
+    H: Hasher,
 {
     send.send(EncodedItem::Size(outboard.tree().size())).await?;
-    let res = match traverse_ranges_validated_impl(data, outboard, ranges, send).await {
+    let res = match traverse_ranges_validated_impl::<_, _, _, H>(data, outboard, ranges, send).await
+    {
         Ok(Ok(())) => EncodedItem::Done,
         Err(cause) => EncodedItem::Error(cause),
         Ok(Err(err)) => return Err(err),
@@ -100,7 +101,7 @@ where
 /// It is possible to encode ranges from a partial file and outboard.
 /// This will either succeed if the requested ranges are all present, or fail
 /// as soon as a range is missing.
-async fn traverse_ranges_validated_impl<D, O, F>(
+async fn traverse_ranges_validated_impl<D, O, F, H>(
     data: D,
     outboard: O,
     ranges: &ChunkRangesRef,
@@ -110,11 +111,12 @@ where
     D: ReadBytesAt,
     O: Outboard,
     F: Sender,
+    H: Hasher,
 {
     if ranges.is_empty() {
         return Ok(Ok(()));
     }
-    let mut stack: SmallVec<[_; 10]> = SmallVec::<[blake3::Hash; 10]>::new();
+    let mut stack: SmallVec<[_; 10]> = SmallVec::<[Hash; 10]>::new();
     stack.push(outboard.root());
     let data = data;
     let tree = outboard.tree();
@@ -130,16 +132,16 @@ where
                 ..
             } => {
                 let (l_hash, r_hash) = outboard.load(node)?.unwrap();
-                let actual = parent_cv(&l_hash, &r_hash, is_root);
+                let actual = H::hash_inner(&l_hash, &r_hash, is_root);
                 let expected = stack.pop().unwrap();
                 if actual != expected {
                     return Err(EncodeError::ParentHashMismatch(node));
                 }
                 if right {
-                    stack.push(r_hash);
+                    stack.push(r_hash.clone());
                 }
                 if left {
-                    stack.push(l_hash);
+                    stack.push(l_hash.clone());
                 }
                 let item = Parent {
                     node,
@@ -165,7 +167,7 @@ where
                     // write into an out buffer to ensure we detect mismatches
                     // before writing to the output.
                     let mut out_buf = Vec::new();
-                    let actual = traverse_selected_rec(
+                    let actual = traverse_selected_rec::<H>(
                         start_chunk,
                         buffer,
                         is_root,
@@ -183,7 +185,7 @@ where
                         }
                     }
                 } else {
-                    let actual = hash_subtree(start_chunk.0, &buffer, is_root);
+                    let actual = H::hash_chunk(start_chunk.0, &buffer, is_root);
                     #[allow(clippy::redundant_slicing)]
                     if actual != expected {
                         return Err(EncodeError::LeafHashMismatch(start_chunk));
@@ -220,7 +222,7 @@ where
 /// This is used as a reference implementation in tests, but also to compute hashes
 /// below the chunk group size when creating responses for outboards with a chunk group
 /// size of >0.
-pub fn traverse_selected_rec(
+pub fn traverse_selected_rec<H: Hasher>(
     start_chunk: ChunkNum,
     data: Bytes,
     is_root: bool,
@@ -228,7 +230,7 @@ pub fn traverse_selected_rec(
     min_level: u32,
     emit_data: bool,
     res: &mut Vec<EncodedItem>,
-) -> blake3::Hash {
+) -> Hash {
     use blake3::CHUNK_LEN;
     if data.len() <= CHUNK_LEN {
         if emit_data && !query.is_empty() {
@@ -240,7 +242,7 @@ pub fn traverse_selected_rec(
                 .into(),
             );
         }
-        hash_subtree(start_chunk.0, &data, is_root)
+        H::hash_chunk(start_chunk.0, &data, is_root)
     } else {
         let chunks = data.len() / CHUNK_LEN + (data.len() % CHUNK_LEN != 0) as usize;
         let chunks = chunks.next_power_of_two();
@@ -268,7 +270,7 @@ pub fn traverse_selected_rec(
             None
         };
         // recurse to the left and right to compute the hashes and emit data
-        let left = traverse_selected_rec(
+        let left = traverse_selected_rec::<H>(
             start_chunk,
             data.slice(..mid_bytes),
             false,
@@ -277,7 +279,7 @@ pub fn traverse_selected_rec(
             emit_data,
             res,
         );
-        let right = traverse_selected_rec(
+        let right = traverse_selected_rec::<H>(
             mid_chunk,
             data.slice(mid_bytes..),
             false,
@@ -292,11 +294,11 @@ pub fn traverse_selected_rec(
             let node = TreeNode(0);
             res[o] = Parent {
                 node,
-                pair: (left, right),
+                pair: (left.clone(), right.clone()),
             }
             .into();
         }
-        parent_cv(&left, &right, is_root)
+        H::hash_inner(&left, &right, is_root)
     }
 }
 
@@ -305,7 +307,7 @@ mod tests {
     use super::*;
     use crate::{
         io::{outboard::PreOrderMemOutboard, sync::encode_ranges_validated},
-        BlockSize, ChunkRanges,
+        Blake3Hasher, BlockSize, ChunkRanges,
     };
 
     fn flatten(items: Vec<EncodedItem>) -> Vec<u8> {

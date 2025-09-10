@@ -1,7 +1,7 @@
 //! Implementation of bao streaming for std io and tokio io
 use bytes::Bytes;
 
-use crate::{blake3, BlockSize, ChunkNum, ChunkRanges, TreeNode};
+use crate::{BlockSize, ChunkNum, ChunkRanges, Hash, TreeNode};
 
 mod error;
 
@@ -21,17 +21,17 @@ pub struct Parent {
     /// The node in the tree for which the hashes are.
     pub node: TreeNode,
     /// The pair of hashes for the node.
-    pub pair: (blake3::Hash, blake3::Hash),
+    pub pair: (Hash, Hash),
 }
 
 #[cfg(feature = "serde")]
 mod serde_support {
     use serde::{ser::SerializeSeq, Deserialize, Serialize};
 
-    use super::{blake3, Parent, TreeNode};
+    use super::{Hash, Parent, TreeNode};
     impl Serialize for Parent {
         fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            let (l, r) = self.pair;
+            let (l, r) = &self.pair;
             let mut seq = serializer.serialize_seq(Some(2))?;
             seq.serialize_element(&self.node)?;
             seq.serialize_element(l.as_bytes())?;
@@ -65,7 +65,7 @@ mod serde_support {
                     })?;
                     Ok(Parent {
                         node,
-                        pair: (blake3::Hash::from(l), blake3::Hash::from(r)),
+                        pair: (Hash::from(l), Hash::from(r)),
                     })
                 }
             }
@@ -201,7 +201,7 @@ pub fn full_chunk_groups(ranges: &ChunkRanges, block_size: BlockSize) -> ChunkRa
     res
 }
 
-pub(crate) fn combine_hash_pair(l: &blake3::Hash, r: &blake3::Hash) -> [u8; 64] {
+pub(crate) fn combine_hash_pair(l: &Hash, r: &Hash) -> [u8; 64] {
     let mut res = [0u8; 64];
     let lb: &mut [u8; 32] = (&mut res[0..32]).try_into().unwrap();
     *lb = *l.as_bytes();

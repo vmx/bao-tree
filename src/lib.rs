@@ -82,7 +82,7 @@
 //!         round_up_to_chunks,
 //!         sync::{decode_ranges, encode_ranges_validated, valid_ranges, CreateOutboard},
 //!     },
-//!     BlockSize, ByteRanges, ChunkRanges,
+//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
 //! };
 //!
 //! /// Use a block size of 16 KiB, a good default for most cases
@@ -92,13 +92,13 @@
 //! // The file we want to serve
 //! let file = std::fs::File::open("video.mp4")?;
 //! // Create an outboard for the file, using the current size
-//! let ob = PreOrderOutboard::<Vec<u8>>::create(&file, BLOCK_SIZE)?;
+//! let ob = PreOrderOutboard::<Vec<u8>>::create::<Blake3Hasher>(&file, BLOCK_SIZE)?;
 //! // Encode the first 100000 bytes of the file
 //! let ranges = ByteRanges::from(0..100000);
 //! let ranges = round_up_to_chunks(&ranges);
 //! // Stream of data to client. Needs to implement `io::Write`. We just use a vec here.
 //! let mut to_client = vec![];
-//! encode_ranges_validated(&file, &ob, &ranges, &mut to_client)?;
+//! encode_ranges_validated::<_, _, _, Blake3Hasher>(&file, &ob, &ranges, &mut to_client)?;
 //!
 //! // Stream of data from client. Needs to implement `io::Read`. We just wrap the vec in a cursor.
 //! let from_server = io::Cursor::new(to_client);
@@ -112,14 +112,14 @@
 //!     root,
 //!     data: vec![],
 //! };
-//! decode_ranges(from_server, &ranges, &mut decoded, &mut ob)?;
+//! decode_ranges::<_, _, _, Blake3Hasher>(from_server, &ranges, &mut decoded, &mut ob)?;
 //!
 //! // the first 100000 bytes of the file should now be in `decoded`
 //! // in addition, the required part of the tree to validate that the data is
 //! // correct are in `ob.data`
 //!
 //! // Print the valid ranges of the file
-//! for range in valid_ranges(&ob, &decoded, &ChunkRanges::all()) {
+//! for range in valid_ranges::<_, _, Blake3Hasher>(&ob, &decoded, &ChunkRanges::all()) {
 //!     println!("{:?}", range);
 //! }
 //! # Ok(())
@@ -144,7 +144,7 @@
 //!         outboard::PreOrderOutboard,
 //!         round_up_to_chunks,
 //!     },
-//!     BlockSize, ByteRanges, ChunkRanges,
+//!     Blake3Hasher, BlockSize, ByteRanges, ChunkRanges,
 //! };
 //! use bytes::BytesMut;
 //! use futures_lite::StreamExt;
@@ -157,13 +157,13 @@
 //! // The file we want to serve
 //! let mut file = iroh_io::File::open("video.mp4".into()).await?;
 //! // Create an outboard for the file, using the current size
-//! let mut ob = PreOrderOutboard::<BytesMut>::create(&mut file, BLOCK_SIZE).await?;
+//! let mut ob = PreOrderOutboard::<BytesMut>::create::<Blake3Hasher>(&mut file, BLOCK_SIZE).await?;
 //! // Encode the first 100000 bytes of the file
 //! let ranges = ByteRanges::from(0..100000);
 //! let ranges = round_up_to_chunks(&ranges);
 //! // Stream of data to client. Needs to implement `io::Write`. We just use a vec here.
 //! let mut to_client = Vec::new();
-//! encode_ranges_validated(file, &mut ob, &ranges, &mut to_client).await?;
+//! encode_ranges_validated::<_, _, _, Blake3Hasher>(file, &mut ob, &ranges, &mut to_client).await?;
 //!
 //! // Stream of data from client. Needs to implement `io::Read`. We just wrap the vec in a cursor.
 //! let from_server = io::Cursor::new(to_client.as_slice());
@@ -177,7 +177,7 @@
 //!     root,
 //!     data: BytesMut::new(),
 //! };
-//! decode_ranges(from_server, ranges, &mut decoded, &mut ob).await?;
+//! decode_ranges::<_, _, _, Blake3Hasher>(from_server, ranges, &mut decoded, &mut ob).await?;
 //!
 //! // the first 100000 bytes of the file should now be in `decoded`
 //! // in addition, the required part of the tree to validate that the data is
@@ -185,7 +185,7 @@
 //!
 //! // Print the valid ranges of the file
 //! let ranges = ChunkRanges::all();
-//! let mut stream = valid_ranges(&mut ob, &mut decoded, &ranges);
+//! let mut stream = valid_ranges::<_, _, Blake3Hasher>(&mut ob, &mut decoded, &ranges);
 //! while let Some(range) = stream.next().await {
 //!     println!("{:?}", range);
 //! }
@@ -214,6 +214,7 @@ mod tree;
 use iter::*;
 pub use tree::{BlockSize, ChunkNum};
 pub mod io;
+use arrayvec::ArrayString;
 pub use blake3;
 
 #[cfg(all(test, feature = "tokio_fsm"))]
@@ -232,9 +233,95 @@ pub type ByteRanges = range_collections::RangeSet2<u64>;
 /// [ChunkRanges] implements [`AsRef<ChunkRangesRef>`].
 pub type ChunkRangesRef = range_collections::RangeSetRef<ChunkNum>;
 
-fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> blake3::Hash {
+// TODO vmx 2025-07-31: check if `Copy` derive really should be there.
+/// A single hash value
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Hash([u8; 32]);
+
+impl Hash {
+    /// Reference to the underlying array
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Create a `Hash` from its raw bytes representation
+    ///
+    /// It's the same as the `From` implementation, but it's a const fn.
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    // Copied from the `blake3` crate
+    /// Encode a `Hash` in lowercase hexadecimal.
+    ///
+    /// The returned [`ArrayString`] is a fixed size and doesn't allocate memory
+    /// on the heap. Note that [`ArrayString`] doesn't provide constant-time
+    /// equality checking, so if you need to compare hashes, prefer the `Hash`
+    /// type.
+    ///
+    /// [`ArrayString`]: https://docs.rs/arrayvec/0.5.1/arrayvec/struct.ArrayString.html
+    pub fn to_hex(&self) -> ArrayString<64> {
+        let mut s = ArrayString::new();
+        let table = b"0123456789abcdef";
+        for &b in self.0.iter() {
+            s.push(table[(b >> 4) as usize] as char);
+            s.push(table[(b & 0xf) as usize] as char);
+        }
+        s
+    }
+}
+
+impl From<[u8; 32]> for Hash {
+    fn from(array: [u8; 32]) -> Self {
+        Self(array)
+    }
+}
+
+impl From<Hash> for [u8; 32] {
+    fn from(hash: Hash) -> Self {
+        hash.0.clone()
+    }
+}
+
+impl fmt::Display for Hash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{:02x}", byte)?;
+        }
+        Ok(())
+    }
+}
+
+// TODO vmx 2025-07-23: Check if making it `Copy` is really alright.
+/// A trait that defines the hashing functions that should be used for the inner and leaf nodes.
+pub trait Hasher: Clone + Copy + Debug + Default + Sync + Send + Unpin {
+    /// TODO vmx 2025-07-11.
+    fn hash_chunk(start_chunk: u64, data: &[u8], is_root: bool) -> Hash;
+    /// TODO vmx 2025-07-11.
+    fn hash_inner(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash;
+}
+
+/// The hasher implementation for using BLAKE3.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Blake3Hasher;
+
+impl Hasher for Blake3Hasher {
+    fn hash_chunk(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
+        blake3_hash_subtree(start_chunk, data, is_root)
+    }
+    fn hash_inner(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash {
+        blake3_parent_cv(left_child, right_child, is_root)
+    }
+}
+
+// TODO vmx 2025-07-09: Maybe change that to use the length instead of the chunk offset. Though
+// this might be a change that isn't really needed and it doesn't make sense to change APIs for
+// the sake of it.
+// TODO vmx 2025-07-09: This would be generic over the hash and return some `impl Trait`. Or a
+// generic type that is "const generic" over the size.
+fn blake3_hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> Hash {
     use blake3::hazmat::{ChainingValue, HasherExt};
-    if is_root {
+    let hash = if is_root {
         debug_assert!(start_chunk == 0);
         blake3::hash(data)
     } else {
@@ -243,14 +330,17 @@ fn hash_subtree(start_chunk: u64, data: &[u8], is_root: bool) -> blake3::Hash {
         hasher.update(data);
         let non_root_hash: ChainingValue = hasher.finalize_non_root();
         blake3::Hash::from(non_root_hash)
-    }
+    };
+    Hash::from(*hash.as_bytes())
 }
 
-fn parent_cv(left_child: &blake3::Hash, right_child: &blake3::Hash, is_root: bool) -> blake3::Hash {
+// TODO vmx 2025-07-09: This takes a blake3::Hash, but it actually needs the bytes only, so maybe
+// changing this to taking bytes only makes sense.
+fn blake3_parent_cv(left_child: &Hash, right_child: &Hash, is_root: bool) -> Hash {
     use blake3::hazmat::{merge_subtrees_non_root, merge_subtrees_root, ChainingValue, Mode};
     let left_child: ChainingValue = *left_child.as_bytes();
     let right_child: ChainingValue = *right_child.as_bytes();
-    if is_root {
+    let hash = if is_root {
         merge_subtrees_root(&left_child, &right_child, Mode::Hash)
     } else {
         blake3::Hash::from(merge_subtrees_non_root(
@@ -258,7 +348,8 @@ fn parent_cv(left_child: &blake3::Hash, right_child: &blake3::Hash, is_root: boo
             &right_child,
             Mode::Hash,
         ))
-    }
+    };
+    Hash::from(*hash.as_bytes())
 }
 
 /// Defines a Bao tree.

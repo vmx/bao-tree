@@ -2,7 +2,7 @@
 //!
 //! Encocding is used to compute hashes, decoding is only used in tests as a
 //! reference implementation.
-use crate::{blake3, hash_subtree, parent_cv, split_inner, ChunkNum, ChunkRangesRef};
+use crate::{split_inner, ChunkNum, ChunkRangesRef, Hash, Hasher};
 
 /// Given a set of chunk ranges, adapt them for a tree of the given size.
 ///
@@ -96,7 +96,7 @@ fn truncated_len(ranges: &ChunkRangesRef, size: u64) -> usize {
 /// This is used as a reference implementation in tests, but also to compute hashes
 /// below the chunk group size when creating responses for outboards with a chunk group
 /// size of >0.
-pub(crate) fn encode_selected_rec(
+pub(crate) fn encode_selected_rec<H: Hasher>(
     start_chunk: ChunkNum,
     data: &[u8],
     is_root: bool,
@@ -104,13 +104,13 @@ pub(crate) fn encode_selected_rec(
     min_level: u32,
     emit_data: bool,
     res: &mut Vec<u8>,
-) -> blake3::Hash {
+) -> Hash {
     use blake3::CHUNK_LEN;
     if data.len() <= CHUNK_LEN {
         if emit_data && !query.is_empty() {
             res.extend_from_slice(data);
         }
-        hash_subtree(start_chunk.0, data, is_root)
+        H::hash_chunk(start_chunk.0, data, is_root)
     } else {
         let chunks = data.len() / CHUNK_LEN + (data.len() % CHUNK_LEN != 0) as usize;
         let chunks = chunks.next_power_of_two();
@@ -134,7 +134,7 @@ pub(crate) fn encode_selected_rec(
             None
         };
         // recurse to the left and right to compute the hashes and emit data
-        let left = encode_selected_rec(
+        let left = encode_selected_rec::<H>(
             start_chunk,
             &data[..mid_bytes],
             false,
@@ -143,7 +143,7 @@ pub(crate) fn encode_selected_rec(
             emit_data,
             res,
         );
-        let right = encode_selected_rec(
+        let right = encode_selected_rec::<H>(
             mid_chunk,
             &data[mid_bytes..],
             false,
@@ -157,7 +157,7 @@ pub(crate) fn encode_selected_rec(
             res[o..o + 32].copy_from_slice(left.as_bytes());
             res[o + 32..o + 64].copy_from_slice(right.as_bytes());
         }
-        parent_cv(&left, &right, is_root)
+        H::hash_inner(&left, &right, is_root)
     }
 }
 
@@ -171,7 +171,9 @@ mod test_support {
     };
 
     use super::{encode_selected_rec, truncate_ranges};
-    use crate::{blake3, BaoChunk, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef};
+    use crate::{
+        BaoChunk, BaoTree, BlockSize, ChunkNum, ChunkRanges, ChunkRangesRef, Hash, Hasher,
+    };
 
     /// Select nodes relevant to a query
     ///
@@ -264,10 +266,10 @@ mod test_support {
         }
     }
 
-    pub(crate) fn bao_outboard_reference(data: &[u8]) -> (Vec<u8>, blake3::Hash) {
+    pub(crate) fn bao_outboard_reference<H: Hasher>(data: &[u8]) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         res.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        let hash = encode_selected_rec(
+        let hash = encode_selected_rec::<H>(
             ChunkNum(0),
             data,
             true,
@@ -279,10 +281,10 @@ mod test_support {
         (res, hash)
     }
 
-    pub(crate) fn bao_encode_reference(data: &[u8]) -> (Vec<u8>, blake3::Hash) {
+    pub(crate) fn bao_encode_reference<H: Hasher>(data: &[u8]) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         res.extend_from_slice(&(data.len() as u64).to_le_bytes());
-        let hash = encode_selected_rec(
+        let hash = encode_selected_rec::<H>(
             ChunkNum(0),
             data,
             true,
@@ -413,16 +415,16 @@ mod test_support {
         })
     }
 
-    pub fn encode_ranges_reference(
+    pub fn encode_ranges_reference<H: Hasher>(
         data: &[u8],
         ranges: &ChunkRangesRef,
         block_size: BlockSize,
-    ) -> (Vec<u8>, blake3::Hash) {
+    ) -> (Vec<u8>, Hash) {
         let mut res = Vec::new();
         let size = data.len() as u64;
         // canonicalize the ranges
         let ranges = truncate_ranges(ranges, size);
-        let hash = encode_selected_rec(
+        let hash = encode_selected_rec::<H>(
             ChunkNum(0),
             data,
             true,
@@ -469,7 +471,7 @@ mod tests {
         rec::{
             bao_encode_reference, bao_outboard_reference, encode_ranges_reference, make_test_data,
         },
-        BlockSize, ChunkNum, ChunkRanges,
+        Blake3Hasher, BlockSize, ChunkNum, ChunkRanges,
     };
 
     fn size_and_slice() -> impl Strategy<Value = (usize, Range<usize>)> {
@@ -493,7 +495,7 @@ mod tests {
     fn bao_outboard_comparison(#[strategy(0usize..100000)] size: usize) {
         let data = make_test_data(size);
         let (expected_outboard, expected_hash) = bao::encode::outboard(&data);
-        let (actual_outboard, actual_hash) = bao_outboard_reference(&data);
+        let (actual_outboard, actual_hash) = bao_outboard_reference::<Blake3Hasher>(&data);
         prop_assert_eq!(expected_outboard, actual_outboard);
         prop_assert_eq!(expected_hash.as_bytes(), actual_hash.as_bytes());
     }
@@ -505,7 +507,7 @@ mod tests {
     fn bao_encode_comparison(#[strategy(0usize..100000)] size: usize) {
         let data = make_test_data(size);
         let (expected_encoded, expected_hash) = bao::encode::encode(&data);
-        let (actual_encoded, actual_hash) = bao_encode_reference(&data);
+        let (actual_encoded, actual_hash) = bao_encode_reference::<Blake3Hasher>(&data);
         prop_assert_eq!(expected_encoded, actual_encoded);
         prop_assert_eq!(expected_hash.as_bytes(), actual_hash.as_bytes());
     }
@@ -531,7 +533,8 @@ mod tests {
         let chunk_start = ChunkNum::full_chunks(start as u64);
         let chunk_end = ChunkNum::chunks(end as u64).max(chunk_start + 1);
         let ranges = ChunkRanges::from(chunk_start..chunk_end);
-        let mut actual_encoded = encode_ranges_reference(&data, &ranges, BlockSize::ZERO).0;
+        let mut actual_encoded =
+            encode_ranges_reference::<Blake3Hasher>(&data, &ranges, BlockSize::ZERO).0;
         actual_encoded.splice(..0, size.to_le_bytes().into_iter());
         prop_assert_eq!(expected_encoded, actual_encoded);
     }
@@ -547,7 +550,8 @@ mod tests {
         let chunk_start = ChunkNum::full_chunks(start as u64);
         let chunk_end = ChunkNum::chunks(end as u64).max(chunk_start + 1);
         let ranges = ChunkRanges::from(chunk_start..chunk_end);
-        let (mut encoded, hash) = encode_ranges_reference(&data, &ranges, BlockSize::ZERO);
+        let (mut encoded, hash) =
+            encode_ranges_reference::<Blake3Hasher>(&data, &ranges, BlockSize::ZERO);
         encoded.splice(..0, size.to_le_bytes().into_iter());
         let bao_hash = bao::Hash::from(*hash.as_bytes());
         let mut decoder =
